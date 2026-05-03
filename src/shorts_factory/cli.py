@@ -17,6 +17,9 @@ from .render import RenderJob, render_clip
 from .scenes import coalesce_short_scenes, detect_scenes
 from .transcribe import transcribe as transcribe_video
 from .util import probe_duration
+from .youtube import download_youtube as download_yt
+from .youtube import search_cc as search_youtube_cc
+from .yt_pipeline import run_youtube_pipeline
 
 app = typer.Typer(add_completion=False, help="Public-domain movie -> vertical shorts pipeline.")
 console = Console()
@@ -128,6 +131,80 @@ def run(
     console.rule("[bold green]done")
     for p in result.shorts:
         console.print(f"  {p}")
+
+
+@app.command(name="youtube-search")
+def youtube_search(
+    query: str = typer.Option(..., "--query", "-q"),
+    limit: int = typer.Option(15, "--limit", "-n"),
+    min_duration: int = typer.Option(300, "--min-duration", help="Minimum length in seconds."),
+    max_duration: int = typer.Option(0, "--max-duration", help="Max length, 0 = unlimited."),
+) -> None:
+    """Search YouTube for Creative Commons-licensed videos matching a query."""
+    items = search_youtube_cc(
+        query,
+        limit=limit,
+        min_duration_seconds=min_duration,
+        max_duration_seconds=max_duration or None,
+    )
+    table = Table(title=f"YouTube CC: {query!r}")
+    table.add_column("#", justify="right")
+    table.add_column("Video ID")
+    table.add_column("Title", overflow="fold")
+    table.add_column("Channel", overflow="fold")
+    table.add_column("Dur", justify="right")
+    table.add_column("Views", justify="right")
+    table.add_column("HD", justify="right")
+    for i, it in enumerate(items):
+        mins, secs = divmod(it.duration_seconds, 60)
+        table.add_row(
+            str(i),
+            it.video_id,
+            (it.title or "")[:60],
+            (it.channel_title or "")[:30],
+            f"{mins}:{secs:02d}",
+            f"{it.view_count:,}",
+            "yes" if it.definition == "hd" else "",
+        )
+    console.print(table)
+
+
+@app.command(name="youtube-download")
+def youtube_download(
+    video_id: str = typer.Option(..., "--id"),
+    max_height: int = typer.Option(1080, "--max-height"),
+) -> None:
+    """Download a single CC-BY YouTube video by ID."""
+    path = download_yt(video_id, max_height=max_height, require_cc=True)
+    console.print(f"[green]Downloaded[/green] {path}")
+
+
+@app.command(name="youtube-run")
+def youtube_run(
+    query: str = typer.Option("", "--query", "-q"),
+    video_id: str = typer.Option("", "--id", help="Skip search and use this YouTube video ID."),
+    max_clips: int = typer.Option(5, "--max-clips"),
+    clip_seconds: float = typer.Option(40.0, "--clip-seconds"),
+    pick_index: int = typer.Option(0, "--pick-index"),
+    min_duration: int = typer.Option(300, "--min-duration"),
+    max_height: int = typer.Option(1080, "--max-height"),
+) -> None:
+    """End-to-end pipeline starting from a YouTube CC-BY video."""
+    if not query and not video_id:
+        raise typer.BadParameter("Provide either --query or --id.")
+    result = run_youtube_pipeline(
+        query=query,
+        video_id=video_id or None,
+        max_clips=max_clips,
+        clip_seconds=clip_seconds,
+        pick_index=pick_index,
+        min_duration_seconds=min_duration,
+        max_height=max_height,
+    )
+    console.rule("[bold green]done")
+    for p in result.shorts:
+        console.print(f"  {p}")
+    console.print(f"\n[bold]Required attribution:[/bold] {result.attribution}")
 
 
 @app.command(name="paths")

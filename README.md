@@ -1,26 +1,33 @@
 # shorts-factory
 
-A pipeline that turns **public-domain feature films** (sourced from the Internet
-Archive) into vertical short-form clips ready for YouTube Shorts / TikTok /
+A pipeline that turns content **you have the right to reuse** — public-domain
+feature films from the Internet Archive, or Creative-Commons-licensed YouTube
+videos — into vertical short-form clips ready for YouTube Shorts / TikTok /
 Reels.
 
 ## What it does
 
-1. **Discover** — searches `archive.org` for public-domain feature films matching
-   a query, ranked by community ratings and download count.
-2. **Download** — pulls the best-quality MP4 with `yt-dlp`.
+1. **Discover** — searches `archive.org` for public-domain feature films, **or**
+   the YouTube Data API for videos uploaded under a Creative Commons license
+   (`videoLicense=creativeCommon`), filtered by duration / view count.
+2. **Download** — pulls the best-quality MP4 (direct HTTP for archive.org;
+   `yt-dlp` for YouTube). The YouTube path re-verifies `status.license ==
+   "creativeCommon"` before downloading and refuses anything else.
 3. **Detect scenes** — splits the film into shots with `PySceneDetect`
-   (`ContentDetector`).
+   (`ContentDetector`), cached to disk.
 4. **Transcribe + rank** — runs `faster-whisper` to get word-level transcripts
    and ranks scenes by a heuristic score (dialogue density, audio energy,
-   duration sweet-spot).
+   duration sweet-spot, motion).
 5. **Reframe + caption** — re-encodes the top scenes to 1080×1920 9:16
-   (smart crop with motion-weighted center-of-mass), burns in word-level
-   captions, and writes them to `out/`.
+   (blurred-bars + centered foreground), burns in word-level
+   captions, writes them to `out/`, and emits an `ATTRIBUTION.txt` next to
+   each clip when the source requires credit (CC-BY).
 
-> ⚠️ This project only works with content you have the right to reuse.
-> The defaults target the Internet Archive's public-domain feature-film
-> collection. Do not point it at copyrighted material.
+> ⚠️ This project will refuse to download YouTube videos that aren't licensed
+> Creative Commons, and the archive.org defaults target public-domain
+> collections only. Do not point it at copyrighted material — even with
+> mirroring / pitch-shift / subtitle overlays, YouTube's Content ID system
+> will still match copyrighted audio and you will lose the channel.
 
 ## Quickstart
 
@@ -42,14 +49,37 @@ Outputs land in `out/<movie-id>/short_<NN>.mp4`.
 
 ## Sub-commands
 
+### archive.org sources (public domain)
+
 ```bash
 shorts-factory search   --query "..." --limit 10
 shorts-factory download --identifier night_of_the_living_dead
 shorts-factory scenes   --video work/<file>.mp4
 shorts-factory rank     --video work/<file>.mp4 --top 5
 shorts-factory render   --video work/<file>.mp4 --start 1234.5 --duration 40
-shorts-factory run      --query "..."          # full pipeline
+shorts-factory run      --query "..."          # full archive.org pipeline
 ```
+
+### YouTube CC-BY sources (modern, color, modern resolution)
+
+Requires a free YouTube Data API v3 key in `YOUTUBE_API_KEY`. Get one at
+<https://console.cloud.google.com/apis/credentials> (enable
+"YouTube Data API v3" first).
+
+```bash
+export YOUTUBE_API_KEY="AIza..."
+
+# discover CC-BY videos
+shorts-factory youtube-search   --query "tears of steel"  --min-duration 300
+# fetch one video by ID (refuses non-CC videos)
+shorts-factory youtube-download --id bjYbA1bWjeE
+# end-to-end pipeline
+shorts-factory youtube-run      --query "tears of steel" --max-clips 5
+```
+
+The YouTube path always emits `out/yt_<id>/ATTRIBUTION.txt` with the
+required CC-BY credit line — paste it into the short's description before
+publishing.
 
 ## Layout
 
@@ -58,18 +88,20 @@ src/shorts_factory/
     cli.py          # typer entrypoint, sub-commands
     config.py       # paths + tunables
     discovery.py    # step 1 - archive.org search
-    download.py     # step 2 - yt-dlp wrapper
+    download.py     # step 2 - archive.org metadata-API + best-mp4 picker
+    youtube.py      # step 1+2 - YouTube Data API CC-BY search + yt-dlp download
     scenes.py       # step 3 - PySceneDetect
     transcribe.py   # step 4a - faster-whisper
     rank.py         # step 4b - heuristic scoring
     render.py       # step 5 - 9:16 reframe + captions (ffmpeg)
-    pipeline.py     # orchestrator that wires 1->5 together
+    pipeline.py     # orchestrator (archive.org source)
+    yt_pipeline.py  # orchestrator (YouTube CC source)
     util.py
 ```
 
 ## Roadmap
 
 - LLM-based highlight ranker (plug into `rank.py`)
-- Face-tracking smart-crop (currently motion-COM)
+- Face-tracking smart-crop (currently blurred-bars)
 - Auto-upload to YouTube / TikTok / IG (intentionally not in v1)
 - LangChain-style metadata generator (titles, descriptions, tags)
