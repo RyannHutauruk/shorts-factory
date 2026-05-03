@@ -16,6 +16,7 @@ dependencies = [
     "pydantic>=2.7",
     "ffmpeg-python>=0.2",
     "numpy>=1.26",
+    "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]

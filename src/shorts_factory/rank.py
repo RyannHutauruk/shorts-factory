@@ -45,8 +45,9 @@ def _audio_energy(video_path: Path, start: float, duration: float) -> float:
     cmd = [
         "ffmpeg",
         "-hide_banner",
+        "-nostats",
         "-loglevel",
-        "error",
+        "info",
         "-ss",
         f"{start:.3f}",
         "-t",
@@ -63,6 +64,9 @@ def _audio_energy(video_path: Path, start: float, duration: float) -> float:
         "-",
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # `volumedetect` writes its summary to stderr at the `info` log level; if we
+    # set loglevel=error (the default elsewhere) the lines are suppressed and
+    # parsing always returns 0.
     out = proc.stderr
     mean_db: float | None = None
     for line in out.splitlines():
@@ -73,8 +77,8 @@ def _audio_energy(video_path: Path, start: float, duration: float) -> float:
                 mean_db = None
     if mean_db is None:
         return 0.0
-    # mean_db is typically in [-60, -5] for film audio; map to [0,1].
-    norm = (mean_db + 60.0) / 55.0
+    # mean_db is typically in [-50, -5] for film audio; map to [0,1].
+    norm = (mean_db + 50.0) / 45.0
     return max(0.0, min(1.0, norm))
 
 
