@@ -47,7 +47,7 @@ export GEMINI_API_KEY="..."   # free key: https://aistudio.google.com/apikey
 # one-shot
 shorts-factory niche --topic "Hindenburg disaster" --niche true_crime
 
-# batch (one short per topic)
+# batch (one short per topic, with anti-repetition across the run)
 shorts-factory niche-batch --topic "Tenerife airport disaster" \
                            --topic "Edmund Fitzgerald" \
                            --topic "Halifax explosion"
@@ -55,9 +55,95 @@ shorts-factory niche-batch --topic "Tenerife airport disaster" \
 # from a topics file (one per line)
 shorts-factory niche-batch --topics-file topics.txt --niche true_crime
 
+# topic discovery (Gemini suggests N fresh ideas per niche)
+shorts-factory topics --niche history --count 30 --out topics.txt
+
 # fallback: hand-written script, no LLM
 shorts-factory niche --script-file my_script.json
 ```
+
+### Niches
+
+`--niche` accepts: `true_crime`, `history`, `science`, `mysteries`,
+`weird_facts`, `biographies`, `tech_history`, `space`. Each has its own
+prompt template tuned for tone + factual accuracy; all generate the same
+hook / 3-5 beats / payoff structure (90-130 words, 35-50 seconds).
+
+## Local scheduler + YouTube uploader
+
+For a hands-off "post 2 shorts/day" channel, run the scheduler **on your
+own machine** (NOT this project's dev VM — uploads from datacenter IPs
+get rate-limited and can flag your channel). The scheduler reads a TOML
+config and fires off `generate -> upload` jobs at the configured slots.
+
+### One-time setup
+
+1. **Get a Gemini key** at <https://aistudio.google.com/apikey>. Free
+   tier (1000 req/day on `gemini-2.5-flash-lite`) is enough for ~6
+   shorts/day.
+2. **Create a YouTube OAuth client** (uploads need OAuth2; an API key
+   alone cannot upload):
+   - Go to <https://console.cloud.google.com/apis/credentials>
+   - **Create credentials -> OAuth client ID -> Desktop app**
+   - Click **Download JSON** and save it locally to
+     `~/.config/shorts-factory/client_secret.json`. **Do NOT paste it
+     into chat or commit it.**
+   - On the OAuth consent screen tab, add your YouTube Google account
+     as a test user and ensure the `https://www.googleapis.com/auth/youtube.upload`
+     scope is enabled.
+3. **Initialise the schedule config**:
+   ```bash
+   shorts-factory schedule init                       # writes ~/.config/shorts-factory/schedule.toml
+   $EDITOR ~/.config/shorts-factory/schedule.toml     # set slots, niche, timezone
+   ```
+4. **First-run consent** (opens a browser tab, caches refresh token to
+   `~/.config/shorts-factory/youtube_token.json`):
+   ```bash
+   # generate one short and upload it as PRIVATE so you can review before going live
+   shorts-factory schedule tick
+   ```
+
+### Schedule config (`~/.config/shorts-factory/schedule.toml`)
+
+```toml
+slots = ["09:30", "20:00"]   # 2 uploads/day, in your local timezone
+timezone = "America/Los_Angeles"
+queue_path = "~/shorts-factory/queue.txt"
+out_root = "~/shorts-factory/out"
+history_path = "~/.config/shorts-factory/history.json"
+niche = "history"            # or any other niche name above
+privacy_status = "public"    # public | unlisted | private
+upload = true                # set false to generate only
+auto_refill_topics = true    # auto-call Gemini topic discovery when queue empties
+refill_count = 30
+```
+
+### Run the scheduler
+
+```bash
+# foreground (Ctrl-C to stop)
+shorts-factory schedule run
+
+# or as a systemd --user service
+shorts-factory schedule systemd > ~/.config/systemd/user/shorts-factory.service
+systemctl --user daemon-reload && systemctl --user enable --now shorts-factory
+```
+
+### One-off upload (no scheduler)
+
+```bash
+shorts-factory youtube-upload \
+  --video out/niche_hindenburg-disaster/hindenburg-disaster.mp4 \
+  --metadata out/niche_hindenburg-disaster/METADATA.txt \
+  --privacy unlisted
+```
+
+Every upload sets `containsSyntheticMedia=true` (YouTube's mandatory AI
+disclosure flag). Title is hard-capped at 100 chars, description at
+5000, tags at 30. Quota: each upload costs ~1,600 of YouTube's free
+10,000/day, so the **API hard-caps you at ~6 uploads/day** — which
+matches the algorithmic sweet spot anyway (1-3/day, never more than
+~6).
 
 Each run produces:
 

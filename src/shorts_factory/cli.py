@@ -11,8 +11,10 @@ from rich.table import Table
 from .config import PATHS, SCENES
 from .discovery import search as search_archive
 from .download import download as download_item
-from .niche.pipeline import run_batch as run_niche_batch
+from .niche.batch import BatchOptions, parse_topics_file
+from .niche.batch import run_batch as run_niche_batch_v2
 from .niche.pipeline import run_niche_pipeline
+from .niche.topics import discover_topics, render_topics_text
 from .pipeline import run_pipeline
 from .rank import diversify, rank_scenes
 from .render import RenderJob, render_clip
@@ -250,19 +252,188 @@ def niche_batch(
     topics_file: Path = typer.Option(None, "--topics-file", help="One topic per line."),
     topic: list[str] = typer.Option([], "--topic", "-t", help="Repeatable. Topics to render."),
     niche: str = typer.Option("true_crime", "--niche"),
+    out_root: Path = typer.Option(None, "--out-root", help="Where to write each short's dir."),
+    history: Path = typer.Option(
+        None, "--history", help="JSON file tracking completed topics + recent hooks."
+    ),
+    max_count: int = typer.Option(0, "--max-count", help="0 = unlimited."),
 ) -> None:
-    """Generate one short per topic in a list. Failed topics are logged and skipped."""
+    """Generate one short per topic in a list, skipping duplicates and same-stem hooks."""
     topics_list: list[str] = list(topic)
     if topics_file and topics_file.exists():
-        topics_list += [
-            line.strip() for line in topics_file.read_text().splitlines() if line.strip()
-        ]
+        topics_list += parse_topics_file(topics_file)
     if not topics_list:
         raise typer.BadParameter("Provide --topic (one or more) or --topics-file.")
-    results = run_niche_batch(topics_list, niche=niche)
-    console.rule(f"[bold green]done: {len(results)}/{len(topics_list)} succeeded")
+    opts = BatchOptions(
+        niche=niche,
+        out_root=out_root,
+        history_path=history,
+        max_count=max_count or None,
+    )
+    results = run_niche_batch_v2(topics_list, options=opts)
+    console.rule(f"[bold green]done: {len(results)}/{len(topics_list)} produced")
     for r in results:
         console.print(f"  {r.short_path}")
+
+
+@app.command(name="topics")
+def topics_discover(
+    niche: str = typer.Option(
+        "history",
+        "--niche",
+        help="true_crime | history | science | mysteries | weird_facts | biographies | tech_history | space",
+    ),
+    count: int = typer.Option(30, "--count", "-n"),
+    out: Path = typer.Option(None, "--out", help="Append to this queue file. Stdout if unset."),
+    avoid_history: Path = typer.Option(
+        None, "--avoid-history", help="JSON history file; topics already produced are excluded."
+    ),
+) -> None:
+    """Generate fresh topic ideas in a niche via Gemini."""
+    avoid: list[str] = []
+    if avoid_history and avoid_history.exists():
+        from .niche.batch import BatchHistory
+
+        avoid = BatchHistory.load(avoid_history).topics
+    items = discover_topics(niche=niche, count=count, avoid=avoid)
+    text = render_topics_text(items)
+    if out:
+        existing = out.read_text(encoding="utf-8") if out.exists() else ""
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            existing + ("\n" if existing and not existing.endswith("\n") else "") + text,
+            encoding="utf-8",
+        )
+        console.print(f"[green]appended {len(items)} topics to {out}[/green]")
+    else:
+        console.print(text)
+
+
+schedule_app = typer.Typer(help="Local scheduler: generate + upload N shorts/day.")
+app.add_typer(schedule_app, name="schedule")
+
+
+@schedule_app.command("init")
+def schedule_init(
+    config: Path = typer.Option(
+        Path("~/.config/shorts-factory/schedule.toml").expanduser(),
+        "--config",
+        "-c",
+    ),
+) -> None:
+    """Write a starter schedule.toml at the given path (no overwrite)."""
+    from .upload.scheduler import write_default_config
+
+    write_default_config(config)
+    console.print(f"[green]config:[/green] {config}")
+
+
+@schedule_app.command("tick")
+def schedule_tick(
+    config: Path = typer.Option(
+        Path("~/.config/shorts-factory/schedule.toml").expanduser(),
+        "--config",
+        "-c",
+    ),
+) -> None:
+    """Run a single tick (generate one short, upload if enabled). Useful for testing."""
+    from .upload.scheduler import load_config, tick_once
+
+    cfg = load_config(config)
+    result = tick_once(cfg)
+    if result.error:
+        console.print(f"[red]error:[/red] {result.error}")
+    else:
+        console.print(
+            f"[green]ok:[/green] {result.topic} -> {result.upload_url or result.short_path}"
+        )
+
+
+@schedule_app.command("run")
+def schedule_run(
+    config: Path = typer.Option(
+        Path("~/.config/shorts-factory/schedule.toml").expanduser(),
+        "--config",
+        "-c",
+    ),
+) -> None:
+    """Run the scheduler indefinitely (blocking, Ctrl-C to stop)."""
+    from .upload.scheduler import run_forever
+
+    run_forever(config)
+
+
+@schedule_app.command("systemd")
+def schedule_systemd(
+    config: Path = typer.Option(
+        Path("~/.config/shorts-factory/schedule.toml").expanduser(),
+        "--config",
+        "-c",
+    ),
+) -> None:
+    """Print a sample systemd --user unit file for the scheduler."""
+    from .upload.scheduler import systemd_unit
+
+    console.print(systemd_unit(config))
+
+
+@app.command(name="youtube-upload")
+def youtube_upload_cmd(
+    video: Path = typer.Option(..., "--video", help="Path to the MP4 to upload."),
+    title: str = typer.Option("", "--title"),
+    description: str = typer.Option("", "--description"),
+    tags: str = typer.Option("", "--tags", help="Comma-separated."),
+    privacy: str = typer.Option("public", "--privacy", help="public | unlisted | private"),
+    metadata_file: Path = typer.Option(
+        None, "--metadata", help="Read title+description+hashtags from a niche METADATA.txt."
+    ),
+    publish_at: str = typer.Option(
+        "", "--publish-at", help="ISO-8601 RFC3339 timestamp; uploads as private and schedules."
+    ),
+) -> None:
+    """Upload a single MP4 to YouTube via the local OAuth flow."""
+    from .upload.youtube import UploadOptions, YouTubeUploader
+
+    if metadata_file and metadata_file.exists():
+        meta_text = metadata_file.read_text(encoding="utf-8")
+        title = title or _extract_section(meta_text, "TITLE")
+        description = description or _extract_section(meta_text, "DESCRIPTION")
+        if not tags:
+            hash_section = _extract_section(meta_text, "HASHTAGS")
+            tags = ",".join(t.lstrip("#") for t in hash_section.split() if t)
+    if not title:
+        raise typer.BadParameter("--title is required (or pass --metadata).")
+    opts = UploadOptions(
+        title=title,
+        description=description,
+        tags=[t.strip() for t in tags.split(",") if t.strip()],
+        privacy_status=privacy,
+        publish_at=publish_at or None,
+        contains_synthetic_media=True,
+    )
+    uploader = YouTubeUploader()
+    info = uploader.channel_info()
+    console.print(f"[bold]channel:[/bold] {info['title']} ({info['id']})")
+    result = uploader.upload(video, opts)
+    console.rule("[bold green]uploaded")
+    console.print(result.url)
+
+
+def _extract_section(text: str, header: str) -> str:
+    """Pull a labelled section from a METADATA.txt-style file."""
+    lines = text.splitlines()
+    out: list[str] = []
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == header:
+            in_section = True
+            continue
+        if in_section:
+            if stripped.isupper() and stripped and not stripped.startswith("#"):
+                break
+            out.append(line)
+    return "\n".join(out).strip()
 
 
 @app.command(name="paths")

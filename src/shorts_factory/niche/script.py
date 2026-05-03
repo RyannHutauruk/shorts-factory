@@ -101,6 +101,67 @@ NICHE_PROMPTS: dict[str, str] = {
         "}\n"
         "Total 90-130 words. visual_hint must be a real searchable noun phrase.\n"
     ),
+    "mysteries": (
+        "You are writing a 35-45 second YouTube Short in the 'unsolved mysteries' "
+        "niche: disappearances, unexplained phenomena, ancient puzzles. Curious "
+        "and grounded - never invent 'facts'. If a theory is speculative, mark "
+        "it with 'one theory is...'. JSON only:\n"
+        "{\n"
+        '  "hook": "1 sentence <=15 words, often a question.",\n'
+        '  "beats": [{"text": "...", "visual_hint": "..."}, ...3-5...],\n'
+        '  "payoff": "1 line - what remains unknown.",\n'
+        '  "sources": ["wikipedia.org/wiki/...", ...]\n'
+        "}\n"
+        "Total 90-130 words. visual_hint must be a real searchable noun phrase.\n"
+    ),
+    "weird_facts": (
+        "You are writing a 35-45 second YouTube Short of weird-but-true facts on "
+        "a single theme. Tone: amused, surprising, never sensational. Every fact "
+        "must be verifiable; omit anything you'd hedge on. JSON only:\n"
+        "{\n"
+        '  "hook": "1 sentence <=15 words.",\n'
+        '  "beats": [{"text": "1 fact in 1-2 sentences.", "visual_hint": "..."}, ...3-5...],\n'
+        '  "payoff": "1 closing line that ties them together.",\n'
+        '  "sources": ["wikipedia.org/wiki/...", ...]\n'
+        "}\n"
+        "Total 90-130 words. visual_hint must be a real searchable noun phrase.\n"
+    ),
+    "biographies": (
+        "You are writing a 35-45 second YouTube Short profile of a fascinating "
+        "person (historical or modern, but only public figures). Empathetic, "
+        "factual, no hagiography. JSON only:\n"
+        "{\n"
+        '  "hook": "1 sentence <=15 words. Lead with stakes or paradox.",\n'
+        '  "beats": [{"text": "...", "visual_hint": "..."}, ...3-5 covering origin, turning point, legacy...],\n'
+        '  "payoff": "1 line.",\n'
+        '  "sources": ["wikipedia.org/wiki/...", ...]\n'
+        "}\n"
+        "Total 90-130 words. visual_hint must be a real searchable noun phrase.\n"
+    ),
+    "tech_history": (
+        "You are writing a 35-45 second YouTube Short in the 'forgotten tech / "
+        "failed inventions' niche - gadgets, formats, ideas that flopped or "
+        "vanished. Wry, fond, accurate. JSON only:\n"
+        "{\n"
+        '  "hook": "1 sentence <=15 words.",\n'
+        '  "beats": [{"text": "...", "visual_hint": "..."}, ...3-5...],\n'
+        '  "payoff": "1 line - why it matters today.",\n'
+        '  "sources": ["wikipedia.org/wiki/...", ...]\n'
+        "}\n"
+        "Total 90-130 words. visual_hint must be a real searchable noun phrase.\n"
+    ),
+    "space": (
+        "You are writing a 35-45 second YouTube Short in the 'space / cosmos' "
+        "niche - missions, exoplanets, black holes, weird physics. Awe-struck "
+        "but grounded; cite missions/observations, not vibes. JSON only:\n"
+        "{\n"
+        '  "hook": "1 sentence <=15 words.",\n'
+        '  "beats": [{"text": "...", "visual_hint": "..."}, ...3-5...],\n'
+        '  "payoff": "1 line.",\n'
+        '  "sources": ["wikipedia.org/wiki/...", "nasa.gov/...", ...]\n'
+        "}\n"
+        "Total 90-130 words. visual_hint must be a real searchable noun phrase.\n"
+    ),
 }
 
 

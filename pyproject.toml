@@ -20,6 +20,12 @@ dependencies = [
     # Niche pipeline (faceless explainer shorts)
     "piper-tts>=1.2.0",
     "google-genai>=0.5.0",
+    # Local scheduler + YouTube upload
+    "apscheduler>=3.10",
+    "google-api-python-client>=2.140",
+    "google-auth-oauthlib>=1.2",
+    # tomli only needed on python<3.11; harmless elsewhere
+    'tomli>=2.0; python_version<"3.11"',
 ]
 
 [project.optional-dependencies]
