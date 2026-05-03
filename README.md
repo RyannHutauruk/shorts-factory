@@ -29,6 +29,57 @@ Reels.
 > mirroring / pitch-shift / subtitle overlays, YouTube's Content ID system
 > will still match copyrighted audio and you will lose the channel.
 
+## Two pipelines in one repo
+
+| Pipeline | Source | When to use |
+| --- | --- | --- |
+| **archive.org / movies** | Public-domain feature films | Auto-clipped 9:16 shorts from CC/PD movies |
+| **YouTube CC-BY** | YouTube Data API + yt-dlp | Same as above but using modern CC-BY YouTube content |
+| **Niche (`niche`)** | **Topic → Gemini script → Piper TTS → Wikimedia B-roll → ffmpeg** | **Faceless-niche explainer shorts (true crime / disasters / history). Most monetizable; doesn't reuse other people's footage.** |
+
+## Faceless-niche pipeline (recommended)
+
+Generates a 35-45 second narrated explainer short from a single topic. No video source needed — the pipeline writes a script with Gemini, narrates it with Piper TTS, fetches CC-licensed images from Wikimedia Commons, and composes them into a 1080×1920 short with burned-in captions and a clickable title/description.
+
+```bash
+export GEMINI_API_KEY="..."   # free key: https://aistudio.google.com/apikey
+
+# one-shot
+shorts-factory niche --topic "Hindenburg disaster" --niche true_crime
+
+# batch (one short per topic)
+shorts-factory niche-batch --topic "Tenerife airport disaster" \
+                           --topic "Edmund Fitzgerald" \
+                           --topic "Halifax explosion"
+
+# from a topics file (one per line)
+shorts-factory niche-batch --topics-file topics.txt --niche true_crime
+
+# fallback: hand-written script, no LLM
+shorts-factory niche --script-file my_script.json
+```
+
+Each run produces:
+
+```
+out/niche_<slug>/
+├── <slug>.mp4         # 1080×1920 H.264 short
+├── METADATA.txt       # title, description, hashtags, image credits
+├── _broll/            # downloaded source images
+├── _narration/        # per-sentence WAVs + concatenated narration.wav
+└── _assemble/         # captions.ass + intermediate visual.mp4
+```
+
+Voice model (one-time, ~120 MB):
+
+```bash
+mkdir -p work/voices
+curl -sSL -o work/voices/en_US-ryan-high.onnx \
+  "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ryan/high/en_US-ryan-high.onnx"
+curl -sSL -o work/voices/en_US-ryan-high.onnx.json \
+  "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/ryan/high/en_US-ryan-high.onnx.json"
+```
+
 ## Quickstart
 
 ```bash

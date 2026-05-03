@@ -17,6 +17,9 @@ dependencies = [
     "ffmpeg-python>=0.2",
     "numpy>=1.26",
     "tqdm>=4.66",
+    # Niche pipeline (faceless explainer shorts)
+    "piper-tts>=1.2.0",
+    "google-genai>=0.5.0",
 ]
 
 [project.optional-dependencies]

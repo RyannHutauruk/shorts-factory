@@ -11,6 +11,8 @@ from rich.table import Table
 from .config import PATHS, SCENES
 from .discovery import search as search_archive
 from .download import download as download_item
+from .niche.pipeline import run_batch as run_niche_batch
+from .niche.pipeline import run_niche_pipeline
 from .pipeline import run_pipeline
 from .rank import diversify, rank_scenes
 from .render import RenderJob, render_clip
@@ -205,6 +207,62 @@ def youtube_run(
     for p in result.shorts:
         console.print(f"  {p}")
     console.print(f"\n[bold]Required attribution:[/bold] {result.attribution}")
+
+
+@app.command(name="niche")
+def niche_run(
+    topic: str = typer.Option(
+        "", "--topic", "-t", help="Topic for the explainer (e.g. 'Hindenburg disaster')."
+    ),
+    niche: str = typer.Option(
+        "true_crime", "--niche", help="Niche prompt: true_crime|history|science."
+    ),
+    script_file: Path = typer.Option(
+        None, "--script-file", help="JSON script file (skips Gemini)."
+    ),
+    music: Path = typer.Option(
+        None, "--music", help="Optional background music track (any audio format)."
+    ),
+    voice: Path = typer.Option(
+        None, "--voice", help="Path to a Piper .onnx voice model. Defaults to en_US-ryan-high."
+    ),
+) -> None:
+    """Generate a single faceless-niche narrated short."""
+    if not topic and not script_file:
+        raise typer.BadParameter("Pass either --topic or --script-file.")
+    result = run_niche_pipeline(
+        topic=topic,
+        niche=niche,
+        script_file=script_file,
+        music_path=music,
+        voice_model=voice,
+    )
+    console.rule("[bold green]done")
+    console.print(f"short:    {result.short_path}")
+    console.print(f"metadata: {result.metadata_path}")
+    console.print(f"\n[bold]title:[/bold] {result.metadata.title}")
+    console.print(f"[bold]description:[/bold] {result.metadata.description}")
+    console.print(f"[bold]hashtags:[/bold] {' '.join(result.metadata.hashtags)}")
+
+
+@app.command(name="niche-batch")
+def niche_batch(
+    topics_file: Path = typer.Option(None, "--topics-file", help="One topic per line."),
+    topic: list[str] = typer.Option([], "--topic", "-t", help="Repeatable. Topics to render."),
+    niche: str = typer.Option("true_crime", "--niche"),
+) -> None:
+    """Generate one short per topic in a list. Failed topics are logged and skipped."""
+    topics_list: list[str] = list(topic)
+    if topics_file and topics_file.exists():
+        topics_list += [
+            line.strip() for line in topics_file.read_text().splitlines() if line.strip()
+        ]
+    if not topics_list:
+        raise typer.BadParameter("Provide --topic (one or more) or --topics-file.")
+    results = run_niche_batch(topics_list, niche=niche)
+    console.rule(f"[bold green]done: {len(results)}/{len(topics_list)} succeeded")
+    for r in results:
+        console.print(f"  {r.short_path}")
 
 
 @app.command(name="paths")
