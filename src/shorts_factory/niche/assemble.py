@@ -142,6 +142,24 @@ def _shot_filter(input_idx: int, duration: float, label: str) -> str:
     )
 
 
+def _compute_shot_durations(narration: Narration, *, tail_pad: float = 0.4) -> list[float]:
+    """One duration per visual shot. Each shot covers from its sentence start
+    until the next sentence's start (so inter-sentence silences are included).
+    The final shot extends ``tail_pad`` seconds past the end of the audio so
+    the last word has visual breathing room. Sum equals
+    ``narration.duration + tail_pad``.
+    """
+    segs = narration.sentences
+    durations: list[float] = []
+    for i, seg in enumerate(segs):
+        if i + 1 < len(segs):
+            next_start = segs[i + 1].start
+        else:
+            next_start = narration.duration + tail_pad
+        durations.append(max(0.05, next_start - seg.start))
+    return durations
+
+
 def _build_visual_filter(durations: list[float], ass_path: Path) -> str:
     """Build the full filter_complex for the visual (silent) track."""
     shots = [_shot_filter(i, d, f"shot{i}") for i, d in enumerate(durations)]
@@ -173,7 +191,9 @@ def assemble(job: AssembleJob, *, work_dir: Path | None = None) -> Path:
             f"need exactly one visual per narrated sentence: "
             f"{len(job.visuals)} visuals vs {len(job.narration.sentences)} sentences"
         )
-    durations = [seg.duration for seg in job.narration.sentences]
+    # Visual track must span the FULL narration WAV (which includes inter-
+    # sentence gaps), otherwise -shortest later trims off the trailing audio.
+    durations = _compute_shot_durations(job.narration, tail_pad=0.4)
     total_dur = sum(durations)
 
     work = work_dir or job.out_path.parent / "_assemble"
@@ -222,15 +242,17 @@ def assemble(job: AssembleJob, *, work_dir: Path | None = None) -> Path:
         "-i",
         str(job.narration.full_audio),
     ]
+    # Pad the narration audio with silence to match the (slightly longer)
+    # visual track so the trailing tail_pad isn't trimmed by -shortest.
     if job.music_path and job.music_path.exists():
         cmd_b += ["-stream_loop", "-1", "-i", str(job.music_path)]
         audio_filter = (
-            "[1:a]volume=1.0[narr];"
+            f"[1:a]volume=1.0,apad=whole_dur={total_dur:.3f}[narr];"
             f"[2:a]volume=0.07,atrim=duration={total_dur:.3f},asetpts=PTS-STARTPTS[bg];"
             "[narr][bg]amix=inputs=2:duration=first:dropout_transition=0[a]"
         )
     else:
-        audio_filter = "[1:a]volume=1.0[a]"
+        audio_filter = f"[1:a]volume=1.0,apad=whole_dur={total_dur:.3f}[a]"
     cmd_b += [
         "-filter_complex",
         audio_filter,
@@ -244,7 +266,8 @@ def assemble(job: AssembleJob, *, work_dir: Path | None = None) -> Path:
         "aac",
         "-b:a",
         "192k",
-        "-shortest",
+        "-t",
+        f"{total_dur:.3f}",
         "-movflags",
         "+faststart",
         str(job.out_path),
