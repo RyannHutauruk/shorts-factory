@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+build/
+dist/
+
+# Pipeline working data
+work/
+out/
+downloads/
+models/
+*.mp4
+*.mkv
+*.webm
+*.mp3
+*.wav
+!tests/fixtures/**/*.mp4
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
