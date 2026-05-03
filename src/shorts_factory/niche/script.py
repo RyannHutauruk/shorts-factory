@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -137,13 +138,15 @@ def generate_script(
     topic: str,
     *,
     niche: str = "true_crime",
-    model: str = "gemini-2.0-flash",
+    model: str = "gemini-2.5-flash-lite",
     api_key: str | None = None,
 ) -> Script:
     """Generate a structured ``Script`` for ``topic`` using Gemini.
 
     The Gemini SDK is invoked via ``google.genai.Client``. ``GEMINI_API_KEY``
     is read from the environment by the SDK; we pass it explicitly when given.
+    On free-tier ``RESOURCE_EXHAUSTED`` 429s we honour the API's suggested
+    retry delay and retry up to 3 times.
     """
     if niche not in NICHE_PROMPTS:
         raise ValueError(f"unknown niche {niche!r}; choose from {sorted(NICHE_PROMPTS)}")
@@ -159,7 +162,8 @@ def generate_script(
 
     client = genai.Client(api_key=key)
     prompt = NICHE_PROMPTS[niche] + f"\nTopic: {topic}\n"
-    response = client.models.generate_content(
+    response = _gemini_call_with_retry(
+        client,
         model=model,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -185,6 +189,39 @@ def generate_script(
         payoff=str(payload["payoff"]).strip(),
         sources=[str(s).strip() for s in (payload.get("sources") or [])],
     )
+
+
+def _gemini_call_with_retry(
+    client: Any,
+    *,
+    model: str,
+    contents: str,
+    config: Any,
+    max_attempts: int = 3,
+) -> Any:
+    """Call ``client.models.generate_content`` with retry on free-tier 429s.
+
+    The Gemini API includes a ``retryDelay`` hint in the error details (e.g.
+    ``41s``); we honour that and retry up to ``max_attempts``.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return client.models.generate_content(model=model, contents=contents, config=config)
+        except Exception as exc:  # noqa: BLE001 - genai raises ClientError subclass
+            last_exc = exc
+            msg = str(exc)
+            if "RESOURCE_EXHAUSTED" not in msg and "429" not in msg:
+                raise
+            wait_s = 30.0
+            m = re.search(r"retry in (\d+(?:\.\d+)?)\s*s", msg, re.IGNORECASE)
+            if m:
+                wait_s = float(m.group(1)) + 2.0
+            wait_s = max(wait_s, 5.0)
+            print(f"[gemini] 429 throttled, sleeping {wait_s:.1f}s (attempt {attempt + 1})")
+            time.sleep(wait_s)
+    assert last_exc is not None
+    raise last_exc
 
 
 def script_from_file(path: str | os.PathLike[str]) -> Script:

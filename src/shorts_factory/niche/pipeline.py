@@ -7,10 +7,11 @@ LLM key is available.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from ..config import PATHS
@@ -170,6 +171,10 @@ def run_niche_pipeline(
     slug = slugify(topic)[:40] or "short"
     base = out_dir or (PATHS.out / f"niche_{slug}")
     base.mkdir(parents=True, exist_ok=True)
+
+    # Persist the script so the run can be reproduced (or just re-rendered)
+    # without another Gemini call.
+    (base / "script.json").write_text(json.dumps(asdict(script), indent=2), encoding="utf-8")
 
     narration_dir = base / "_narration"
     broll_dir = base / "_broll"

@@ -81,7 +81,7 @@ def generate_metadata(
     script: Script,
     visuals: list[BrollAsset],
     *,
-    model: str = "gemini-2.0-flash",
+    model: str = "gemini-2.5-flash-lite",
     api_key: str | None = None,
 ) -> ShortMetadata:
     key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
@@ -92,9 +92,12 @@ def generate_metadata(
     from google import genai
     from google.genai import types
 
+    from .script import _gemini_call_with_retry
+
     client = genai.Client(api_key=key)
     prompt = METADATA_PROMPT.format(topic=script.topic, hook=script.hook, payoff=script.payoff)
-    resp = client.models.generate_content(
+    resp = _gemini_call_with_retry(
+        client,
         model=model,
         contents=prompt,
         config=types.GenerateContentConfig(temperature=0.75, response_mime_type="application/json"),
