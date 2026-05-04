@@ -390,13 +390,18 @@ def assemble_longform(job: LongformAssembleJob, *, work_dir: Path | None = None)
     )
 
     # Stage A: silent visual track.
+    # The filter graph for a 10-min documentary easily exceeds Windows'
+    # 32,767-char CreateProcess argument cap, so we write it to a file and
+    # pass ``-filter_complex_script`` instead of inlining ``-filter_complex``.
     visual_path = work / "visual.mp4"
+    visual_filter_path = work / "visual_filter.txt"
+    visual_filter_path.write_text(_build_visual_filter(shots, ass_path), encoding="utf-8")
     cmd_a: list[str] = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-stats"]
     for shot in shots:
         cmd_a += ["-loop", "1", "-t", f"{shot.duration:.3f}", "-i", str(shot.image_path)]
     cmd_a += [
-        "-filter_complex",
-        _build_visual_filter(shots, ass_path),
+        "-filter_complex_script",
+        str(visual_filter_path),
         "-map",
         "[v]",
         "-r",
