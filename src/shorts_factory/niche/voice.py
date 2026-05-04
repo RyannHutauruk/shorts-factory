@@ -8,6 +8,7 @@ come from running faster-whisper on the concatenated narration audio.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import wave
@@ -16,7 +17,33 @@ from pathlib import Path
 
 from .script import Script
 
-DEFAULT_VOICE = Path("/home/ubuntu/shorts-factory/work/voices/en_US-ryan-high.onnx")
+DEFAULT_VOICE_NAME = "en_US-ryan-high.onnx"
+
+
+def default_voice_path() -> Path:
+    """Resolve the Piper voice model location for this machine.
+
+    Search order:
+      1. ``$SHORTS_FACTORY_VOICE`` env var (full path).
+      2. ``./work/voices/en_US-ryan-high.onnx`` relative to the current
+         working directory (the convention used in our README).
+      3. ``~/shorts-factory/work/voices/en_US-ryan-high.onnx``.
+
+    The first path that exists wins. If none exist we still return the
+    cwd-relative path so the caller's "not found" error message points
+    at the place the user is most likely to fix.
+    """
+    env_path = os.environ.get("SHORTS_FACTORY_VOICE")
+    if env_path:
+        return Path(env_path).expanduser()
+
+    cwd_voice = Path.cwd() / "work" / "voices" / DEFAULT_VOICE_NAME
+    home_voice = Path.home() / "shorts-factory" / "work" / "voices" / DEFAULT_VOICE_NAME
+
+    for candidate in (cwd_voice, home_voice):
+        if candidate.exists():
+            return candidate
+    return cwd_voice
 
 
 @dataclass(frozen=True)
@@ -133,7 +160,7 @@ def synthesize(
 
     A short silence is inserted between sentences to feel natural.
     """
-    voice = voice_model or DEFAULT_VOICE
+    voice = voice_model or default_voice_path()
     if not voice.exists():
         raise FileNotFoundError(
             f"piper voice model not found at {voice}. "
