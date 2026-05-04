@@ -252,18 +252,27 @@ def generate_script(
     )
 
 
+_RATE_LIMIT_MARKERS = ("RESOURCE_EXHAUSTED", "429")
+_TRANSIENT_MARKERS = ("UNAVAILABLE", "503", "INTERNAL", "500", "DEADLINE_EXCEEDED", "504")
+
+
 def _gemini_call_with_retry(
     client: Any,
     *,
     model: str,
     contents: str,
     config: Any,
-    max_attempts: int = 3,
+    max_attempts: int = 4,
 ) -> Any:
-    """Call ``client.models.generate_content`` with retry on free-tier 429s.
+    """Call ``client.models.generate_content`` with retry on transient errors.
 
-    The Gemini API includes a ``retryDelay`` hint in the error details (e.g.
-    ``41s``); we honour that and retry up to ``max_attempts``.
+    Retries on:
+      - 429 ``RESOURCE_EXHAUSTED`` (free-tier rate limit). Honours the
+        ``retry in Ns`` hint when the API includes one.
+      - 503 ``UNAVAILABLE`` / 500 ``INTERNAL`` / 504 ``DEADLINE_EXCEEDED``
+        (server-side overload). Uses exponential backoff: 5, 15, 30, 60s.
+
+    All other errors are surfaced immediately.
     """
     last_exc: Exception | None = None
     for attempt in range(max_attempts):
@@ -272,14 +281,29 @@ def _gemini_call_with_retry(
         except Exception as exc:  # noqa: BLE001 - genai raises ClientError subclass
             last_exc = exc
             msg = str(exc)
-            if "RESOURCE_EXHAUSTED" not in msg and "429" not in msg:
+            is_rate_limit = any(marker in msg for marker in _RATE_LIMIT_MARKERS)
+            is_transient = any(marker in msg for marker in _TRANSIENT_MARKERS)
+
+            if not (is_rate_limit or is_transient):
                 raise
-            wait_s = 30.0
-            m = re.search(r"retry in (\d+(?:\.\d+)?)\s*s", msg, re.IGNORECASE)
-            if m:
-                wait_s = float(m.group(1)) + 2.0
-            wait_s = max(wait_s, 5.0)
-            print(f"[gemini] 429 throttled, sleeping {wait_s:.1f}s (attempt {attempt + 1})")
+
+            if is_rate_limit:
+                wait_s = 30.0
+                m = re.search(r"retry in (\d+(?:\.\d+)?)\s*s", msg, re.IGNORECASE)
+                if m:
+                    wait_s = float(m.group(1)) + 2.0
+                wait_s = max(wait_s, 5.0)
+                label = "429 throttled"
+            else:
+                # exponential backoff: 5s, 15s, 30s, 60s
+                wait_s = min(5.0 * (3**attempt), 60.0)
+                label = "503/transient"
+
+            if attempt + 1 >= max_attempts:
+                break
+            print(
+                f"[gemini] {label}, sleeping {wait_s:.1f}s (attempt {attempt + 1}/{max_attempts})"
+            )
             time.sleep(wait_s)
     assert last_exc is not None
     raise last_exc
