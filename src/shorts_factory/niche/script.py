@@ -262,7 +262,7 @@ def _gemini_call_with_retry(
     model: str,
     contents: str,
     config: Any,
-    max_attempts: int = 4,
+    max_attempts: int = 6,
 ) -> Any:
     """Call ``client.models.generate_content`` with retry on transient errors.
 

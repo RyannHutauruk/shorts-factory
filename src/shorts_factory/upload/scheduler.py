@@ -83,6 +83,20 @@ class ScheduleConfig:
     schedule_publish_offset_min: int = 0
     last_niche: str | None = None  # in-memory only; reset per process
 
+    # Long-form documentary scheduler (separate cadence from shorts).
+    # Empty list = long-form disabled (default).
+    longform_slots: list[str] = field(default_factory=list)
+    # Cron day-of-week filter for long-form, e.g. "mon,wed,fri".
+    # Empty = every day.
+    longform_days: str = ""
+    longform_duration_min: float = 10.0
+    longform_niche: str | list[str] = field(default_factory=list)
+    longform_voices: list[Path] = field(default_factory=list)
+    longform_music: Path | None = None
+    longform_privacy_status: str = "private"
+    longform_upload: bool = True
+    last_longform_niche: str | None = None
+
     @staticmethod
     def _expand(p: Path) -> Path:
         return Path(os.path.expanduser(str(p))).resolve()
@@ -102,6 +116,15 @@ class ScheduleConfig:
             refill_count=self.refill_count,
             schedule_publish_offset_min=self.schedule_publish_offset_min,
             last_niche=self.last_niche,
+            longform_slots=list(self.longform_slots),
+            longform_days=self.longform_days,
+            longform_duration_min=self.longform_duration_min,
+            longform_niche=self.longform_niche,
+            longform_voices=[self._expand(v) for v in self.longform_voices],
+            longform_music=self._expand(self.longform_music) if self.longform_music else None,
+            longform_privacy_status=self.longform_privacy_status,
+            longform_upload=self.longform_upload,
+            last_longform_niche=self.last_longform_niche,
         )
 
     def niche_list(self) -> list[str]:
@@ -140,6 +163,44 @@ class ScheduleConfig:
         stem = self.queue_path.stem or "queue"
         return self.queue_path.with_name(f"{stem}_{niche}{suffix}")
 
+    def longform_niche_list(self) -> list[str]:
+        """Resolve ``longform_niche`` to a niche list. Falls back to ``niche``
+        when ``longform_niche`` is empty so users only have to set it once
+        if they want the same rotation for both formats.
+        """
+        if isinstance(self.longform_niche, list) and self.longform_niche:
+            niches = [n for n in self.longform_niche if n in ALL_NICHES]
+            if not niches:
+                raise ValueError(
+                    f"longform_niche list contains no recognised entries: {self.longform_niche!r}"
+                )
+            return niches
+        if isinstance(self.longform_niche, str):
+            if self.longform_niche == "all":
+                return list(ALL_NICHES)
+            if self.longform_niche in ALL_NICHES:
+                return [self.longform_niche]
+        # Fall through to the shorts niche list.
+        return self.niche_list()
+
+    def pick_longform_niche(self, *, rng: random.Random | None = None) -> str:
+        niches = self.longform_niche_list()
+        if len(niches) == 1:
+            return niches[0]
+        candidates = [n for n in niches if n != self.last_longform_niche] or niches
+        if rng is None:
+            return random.choice(candidates)
+        return rng.choice(candidates)
+
+    def longform_queue_path_for(self, niche: str) -> Path:
+        """Long-form queue files are kept separate so we don't burn through
+        shorts topics with documentaries. ``queue_history.txt`` ->
+        ``queue_longform_history.txt``.
+        """
+        suffix = self.queue_path.suffix or ".txt"
+        stem = self.queue_path.stem or "queue"
+        return self.queue_path.with_name(f"{stem}_longform_{niche}{suffix}")
+
 
 def load_config(path: Path) -> ScheduleConfig:
     """Parse a schedule.toml file. Unknown keys are ignored.
@@ -154,6 +215,13 @@ def load_config(path: Path) -> ScheduleConfig:
         niche = [str(n) for n in raw_niche]
     else:
         niche = str(raw_niche)
+    raw_lf_niche = raw.get("longform_niche", [])
+    longform_niche: str | list[str]
+    if isinstance(raw_lf_niche, list):
+        longform_niche = [str(n) for n in raw_lf_niche]
+    else:
+        longform_niche = str(raw_lf_niche)
+
     cfg = ScheduleConfig(
         slots=list(raw.get("slots", ["09:30", "20:00"])),
         timezone=str(raw.get("timezone", "UTC")),
@@ -167,6 +235,14 @@ def load_config(path: Path) -> ScheduleConfig:
         auto_refill_topics=bool(raw.get("auto_refill_topics", True)),
         refill_count=int(raw.get("refill_count", 30)),
         schedule_publish_offset_min=int(raw.get("schedule_publish_offset_min", 0)),
+        longform_slots=list(raw.get("longform_slots", [])),
+        longform_days=str(raw.get("longform_days", "")),
+        longform_duration_min=float(raw.get("longform_duration_min", 10.0)),
+        longform_niche=longform_niche,
+        longform_voices=[Path(str(v)) for v in raw.get("longform_voices", [])],
+        longform_music=Path(str(raw["longform_music"])) if raw.get("longform_music") else None,
+        longform_privacy_status=str(raw.get("longform_privacy_status", "private")),
+        longform_upload=bool(raw.get("longform_upload", True)),
     )
     return cfg.expanded()
 
@@ -197,6 +273,18 @@ upload = true                # set false to generate without uploading
 auto_refill_topics = true    # auto-call Gemini topic discovery when a niche queue empties
 refill_count = 30
 schedule_publish_offset_min = 0
+
+# ---------- Long-form documentaries (10-min 16:9 videos) ----------
+# Long-form runs on a SEPARATE cadence (much heavier per render).
+# Leave longform_slots = [] to disable. Recommended cadence: 2-3 per WEEK.
+longform_slots = []                    # e.g. ["08:00"] - one render per active day
+longform_days  = ""                    # e.g. "mon,wed,fri" - blank means daily
+longform_duration_min = 10.0           # 5-25 minutes typical
+longform_niche = []                    # empty = same niche rotation as shorts above
+longform_voices = []                   # paths to extra Piper .onnx voices, e.g. ["work/voices/en_US-amy-medium.onnx"]
+longform_music = ""                    # optional path to a ducked music bed
+longform_privacy_status = "private"    # ALWAYS start private - long-form quality matters more
+longform_upload = true
 """,
         encoding="utf-8",
     )
@@ -281,6 +369,132 @@ def tick_once(cfg: ScheduleConfig) -> TickResult:
     return tick
 
 
+def tick_once_longform(cfg: ScheduleConfig) -> TickResult:
+    """Run a single long-form scheduler tick: pick a niche, pop a topic,
+    generate the documentary, optionally upload."""
+    from ..niche.batch import BatchHistory, pop_next_topic
+    from ..niche.longform_pipeline import run_longform_pipeline
+    from ..niche.topics import discover_topics, render_topics_text
+
+    cfg = cfg.expanded()
+    cfg.out_root.mkdir(parents=True, exist_ok=True)
+
+    niche = cfg.pick_longform_niche()
+    cfg.last_longform_niche = niche
+    queue_path = cfg.longform_queue_path_for(niche)
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[schedule] longform tick niche={niche} queue={queue_path}")
+
+    history = BatchHistory.load(cfg.history_path)
+
+    if not queue_path.exists() or _queue_is_empty(queue_path):
+        if not cfg.auto_refill_topics:
+            return TickResult(
+                topic=None,
+                short_path=None,
+                upload_url=None,
+                error="longform queue empty",
+                niche=niche,
+            )
+        topics = discover_topics(
+            niche=niche,
+            count=max(10, cfg.refill_count // 3),  # long-form burns topics slower
+            avoid=history.topics,
+            audience=cfg.audience,
+        )
+        queue_path.write_text(render_topics_text(topics) + "\n", encoding="utf-8")
+        print(f"[schedule] refilled longform {niche} queue with {len(topics)} topics")
+
+    topic = pop_next_topic(queue_path, history)
+    if not topic:
+        return TickResult(
+            topic=None,
+            short_path=None,
+            upload_url=None,
+            error="longform queue empty after refill",
+            niche=niche,
+        )
+
+    sub = cfg.out_root / f"longform_{_slug_dir(topic).removeprefix('niche_')}"
+    try:
+        result = run_longform_pipeline(
+            topic=topic,
+            niche=niche,
+            duration_min=cfg.longform_duration_min,
+            audience=cfg.audience,
+            voices=cfg.longform_voices or None,
+            music_path=cfg.longform_music,
+            out_dir=sub,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return TickResult(
+            topic=topic,
+            short_path=None,
+            upload_url=None,
+            error=f"longform-generate: {exc}",
+            niche=niche,
+        )
+
+    history.record(topic, result.script.cold_open[:120])
+    history.save()
+
+    if not cfg.longform_upload:
+        return TickResult(
+            topic=topic,
+            short_path=result.video_path,
+            upload_url=None,
+            error=None,
+            niche=niche,
+        )
+
+    return _upload_longform_and_record(cfg, result, sub, niche=niche)
+
+
+def _upload_longform_and_record(
+    cfg: ScheduleConfig, result: Any, sub: Path, *, niche: str
+) -> TickResult:
+    from .youtube import UploadOptions, YouTubeAuthError, YouTubeUploader
+
+    opts = UploadOptions(
+        title=result.metadata.title,
+        description=result.metadata.full_description,
+        tags=[t.lstrip("#") for t in result.metadata.hashtags],
+        privacy_status=cfg.longform_privacy_status,
+        contains_synthetic_media=True,
+    )
+    try:
+        uploader = YouTubeUploader()
+        ur = uploader.upload(result.video_path, opts)
+    except YouTubeAuthError as exc:
+        return TickResult(
+            topic=result.script.topic,
+            short_path=result.video_path,
+            upload_url=None,
+            error=f"longform-upload-auth: {exc}",
+            niche=niche,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return TickResult(
+            topic=result.script.topic,
+            short_path=result.video_path,
+            upload_url=None,
+            error=f"longform-upload: {exc}",
+            niche=niche,
+        )
+
+    (sub / "UPLOAD.txt").write_text(
+        f"video_id: {ur.video_id}\nurl: {ur.url}\nuploaded_at: {datetime.now().isoformat()}\n",
+        encoding="utf-8",
+    )
+    return TickResult(
+        topic=result.script.topic,
+        short_path=result.video_path,
+        upload_url=ur.url,
+        error=None,
+        niche=niche,
+    )
+
+
 def _upload_and_record(cfg: ScheduleConfig, result: Any, sub: Path) -> TickResult:
     from .youtube import UploadOptions, YouTubeAuthError, YouTubeUploader
 
@@ -329,40 +543,72 @@ def _upload_and_record(cfg: ScheduleConfig, result: Any, sub: Path) -> TickResul
     )
 
 
+def _add_cron_slots(
+    sched: Any,
+    slots: list[str],
+    job_callable: Any,
+    *,
+    label: str,
+    day_of_week: str = "",
+) -> None:
+    from apscheduler.triggers.cron import CronTrigger
+
+    for slot in slots:
+        try:
+            hh, mm = slot.split(":", 1)
+            kwargs: dict[str, Any] = {"hour": int(hh), "minute": int(mm)}
+            if day_of_week:
+                kwargs["day_of_week"] = day_of_week
+            sched.add_job(
+                job_callable,
+                CronTrigger(**kwargs),
+                id=f"{label}-slot-{slot}",
+                replace_existing=True,
+            )
+        except ValueError:
+            print(f"[schedule] invalid {label} slot {slot!r}, expected HH:MM", file=sys.stderr)
+
+
 def run_forever(cfg_path: Path) -> None:
     """Run the scheduler indefinitely (blocking). Ctrl-C to stop."""
     try:
         from apscheduler.schedulers.blocking import BlockingScheduler
-        from apscheduler.triggers.cron import CronTrigger
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("apscheduler not installed. Run `uv pip install apscheduler`.") from exc
 
     cfg = load_config(cfg_path)
     sched = BlockingScheduler(timezone=cfg.timezone)
 
-    def _job() -> None:
+    def _shorts_job() -> None:
         result = tick_once(cfg)
         if result.error:
-            print(f"[schedule] error: {result.error}")
+            print(f"[schedule] shorts error: {result.error}")
         else:
             url = result.upload_url or "(generation-only)"
-            print(f"[schedule] ok: {result.topic} -> {url}")
+            print(f"[schedule] shorts ok: {result.topic} -> {url}")
 
-    for slot in cfg.slots:
-        try:
-            hh, mm = slot.split(":", 1)
-            sched.add_job(
-                _job,
-                CronTrigger(hour=int(hh), minute=int(mm)),
-                id=f"slot-{slot}",
-                replace_existing=True,
-            )
-        except ValueError:
-            print(f"[schedule] invalid slot {slot!r}, expected HH:MM", file=sys.stderr)
+    def _longform_job() -> None:
+        result = tick_once_longform(cfg)
+        if result.error:
+            print(f"[schedule] longform error: {result.error}")
+        else:
+            url = result.upload_url or "(generation-only)"
+            print(f"[schedule] longform ok: {result.topic} -> {url}")
+
+    _add_cron_slots(sched, cfg.slots, _shorts_job, label="shorts")
+    _add_cron_slots(
+        sched,
+        cfg.longform_slots,
+        _longform_job,
+        label="longform",
+        day_of_week=cfg.longform_days,
+    )
+
     print(
-        f"[schedule] running. cadence={len(cfg.slots)}/day, "
-        f"slots={cfg.slots} tz={cfg.timezone}, niche={cfg.niche}, "
-        f"upload={'on' if cfg.upload else 'off'}"
+        f"[schedule] running. shorts={len(cfg.slots)}/day {cfg.slots} "
+        f"longform={len(cfg.longform_slots)}/run {cfg.longform_slots} "
+        f"days={cfg.longform_days or 'every'} "
+        f"tz={cfg.timezone} upload={'on' if cfg.upload else 'off'}"
     )
     try:
         sched.start()
@@ -410,6 +656,7 @@ __all__ = [
     "run_forever",
     "systemd_unit",
     "tick_once",
+    "tick_once_longform",
     "write_default_config",
 ]
 

@@ -13,6 +13,7 @@ from .discovery import search as search_archive
 from .download import download as download_item
 from .niche.batch import BatchOptions, parse_topics_file
 from .niche.batch import run_batch as run_niche_batch_v2
+from .niche.longform_pipeline import run_longform_pipeline
 from .niche.pipeline import run_niche_pipeline
 from .niche.topics import discover_topics, render_topics_text
 from .pipeline import run_pipeline
@@ -276,6 +277,68 @@ def niche_batch(
         console.print(f"  {r.short_path}")
 
 
+@app.command(name="longform")
+def longform_run(
+    topic: str = typer.Option(
+        "", "--topic", "-t", help="Topic for the documentary (e.g. 'Halifax explosion')."
+    ),
+    niche: str = typer.Option(
+        "history",
+        "--niche",
+        help="Niche prompt: true_crime | history | science | mysteries | "
+        "weird_facts | biographies | tech_history | space.",
+    ),
+    duration: float = typer.Option(
+        10.0, "--duration", "-d", help="Target spoken duration in minutes (5-25)."
+    ),
+    audience: str = typer.Option(
+        "US", "--audience", help="US | UK | global | general - biases topic + script."
+    ),
+    voice: list[Path] = typer.Option(
+        [],
+        "--voice",
+        help="Path to a Piper .onnx voice. Pass multiple times to rotate "
+        "voices across chapters (recommended). Defaults to en_US-ryan-high.",
+    ),
+    music: Path = typer.Option(None, "--music", help="Optional ducked music bed (mp3, wav, ...)."),
+    script_file: Path = typer.Option(
+        None,
+        "--script-file",
+        help="Hand-written long-form script JSON (skips Gemini).",
+    ),
+    out_dir: Path = typer.Option(
+        None,
+        "--out-dir",
+        help="Override the output directory. Defaults to out/longform_<slug>/.",
+    ),
+    no_chapter_cards: bool = typer.Option(
+        False, "--no-chapter-cards", help="Skip the on-screen chapter title cards."
+    ),
+) -> None:
+    """Generate a single long-form (~5-25 min) 16:9 documentary."""
+    if not topic and not script_file:
+        raise typer.BadParameter("Pass either --topic or --script-file.")
+    result = run_longform_pipeline(
+        topic=topic,
+        niche=niche,
+        duration_min=duration,
+        audience=audience,
+        voices=list(voice) if voice else None,
+        music_path=music,
+        script_file=script_file,
+        out_dir=out_dir,
+        show_chapter_cards=not no_chapter_cards,
+    )
+    console.rule("[bold green]done")
+    console.print(f"video:    {result.video_path}")
+    console.print(f"metadata: {result.metadata_path}")
+    console.print(f"narration: {result.narration.duration / 60:.1f} min")
+    console.print(f"\n[bold]title:[/bold] {result.metadata.title}")
+    console.print("[bold]chapters:[/bold]")
+    for ch in result.script.chapters:
+        console.print(f"  {ch.index}. {ch.title}")
+
+
 @app.command(name="topics")
 def topics_discover(
     niche: str = typer.Option(
@@ -350,6 +413,28 @@ def schedule_tick(
     else:
         console.print(
             f"[green]ok:[/green] {result.topic} -> {result.upload_url or result.short_path}"
+        )
+
+
+@schedule_app.command("longform-tick")
+def schedule_longform_tick(
+    config: Path = typer.Option(
+        Path("~/.config/shorts-factory/schedule.toml").expanduser(),
+        "--config",
+        "-c",
+    ),
+) -> None:
+    """Run a single long-form tick: generate ONE documentary, upload if enabled."""
+    from .upload.scheduler import load_config, tick_once_longform
+
+    cfg = load_config(config)
+    result = tick_once_longform(cfg)
+    if result.error:
+        console.print(f"[red]longform error:[/red] {result.error}")
+    else:
+        console.print(
+            f"[green]longform ok:[/green] {result.topic} -> "
+            f"{result.upload_url or result.short_path}"
         )
 
 

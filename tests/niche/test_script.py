@@ -157,25 +157,20 @@ def test_gemini_retry_succeeds_after_503(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_gemini_retry_uses_exponential_backoff_for_503(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """503s back off as 5s, 15s, 30s before giving up at attempt 4."""
+    """503s back off as 5s, 15s, 45s, 60s, 60s before giving up at attempt 6."""
     from shorts_factory.niche import script as script_mod
 
     sleeps: list[float] = []
     monkeypatch.setattr(script_mod.time, "sleep", lambda s: sleeps.append(s))
 
     fake_client = MagicMock()
-    fake_client.models.generate_content.side_effect = [
-        _make_503_error(),
-        _make_503_error(),
-        _make_503_error(),
-        _make_503_error(),
-    ]
+    fake_client.models.generate_content.side_effect = [_make_503_error()] * 6
 
     with pytest.raises(RuntimeError, match="503"):
         script_mod._gemini_call_with_retry(fake_client, model="m", contents="c", config=None)
 
-    assert fake_client.models.generate_content.call_count == 4
-    assert sleeps == [5.0, 15.0, 45.0]
+    assert fake_client.models.generate_content.call_count == 6
+    assert sleeps == [5.0, 15.0, 45.0, 60.0, 60.0]
 
 
 def test_gemini_retry_honours_429_retry_delay(monkeypatch: pytest.MonkeyPatch) -> None:

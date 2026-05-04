@@ -165,3 +165,81 @@ def test_queue_path_for_multi_niche_uses_per_niche_file(tmp_path: Path) -> None:
 def test_queue_path_for_all_uses_per_niche_file(tmp_path: Path) -> None:
     cfg = ScheduleConfig(niche="all", queue_path=tmp_path / "queue.txt")
     assert cfg.queue_path_for("space") == tmp_path / "queue_space.txt"
+
+
+# ----- long-form scheduler config ------------------------------------------
+
+
+def test_load_config_reads_longform_block(tmp_path: Path) -> None:
+    p = tmp_path / "schedule.toml"
+    p.write_text(
+        'longform_slots = ["08:00"]\n'
+        'longform_days = "mon,wed,fri"\n'
+        "longform_duration_min = 12.5\n"
+        'longform_niche = ["history", "science"]\n'
+        'longform_voices = ["work/voices/a.onnx", "work/voices/b.onnx"]\n'
+        'longform_privacy_status = "unlisted"\n'
+        "longform_upload = false\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(p)
+    assert cfg.longform_slots == ["08:00"]
+    assert cfg.longform_days == "mon,wed,fri"
+    assert cfg.longform_duration_min == 12.5
+    assert cfg.longform_niche == ["history", "science"]
+    assert len(cfg.longform_voices) == 2
+    assert cfg.longform_privacy_status == "unlisted"
+    assert cfg.longform_upload is False
+
+
+def test_longform_niche_list_falls_back_to_shorts_niche() -> None:
+    cfg = ScheduleConfig(niche=["history", "space"], longform_niche=[])
+    assert cfg.longform_niche_list() == ["history", "space"]
+
+
+def test_longform_niche_list_uses_explicit_when_set() -> None:
+    cfg = ScheduleConfig(niche=["history", "space"], longform_niche=["true_crime"])
+    assert cfg.longform_niche_list() == ["true_crime"]
+
+
+def test_longform_niche_list_resolves_all() -> None:
+    cfg = ScheduleConfig(longform_niche="all")
+    assert cfg.longform_niche_list() == list(ALL_NICHES)
+
+
+def test_longform_niche_list_filters_unknown() -> None:
+    cfg = ScheduleConfig(longform_niche=["history", "not_real", "science"])
+    assert cfg.longform_niche_list() == ["history", "science"]
+
+
+def test_pick_longform_niche_avoids_back_to_back() -> None:
+    cfg = ScheduleConfig(longform_niche=["history", "science"])
+    rng = random.Random(42)
+    first = cfg.pick_longform_niche(rng=rng)
+    cfg.last_longform_niche = first
+    for _ in range(20):
+        nxt = cfg.pick_longform_niche(rng=rng)
+        assert nxt != first
+        cfg.last_longform_niche = nxt
+        first = nxt
+
+
+def test_longform_queue_path_is_separate_from_shorts(tmp_path: Path) -> None:
+    cfg = ScheduleConfig(
+        niche=["history", "space"],
+        longform_niche=["history"],
+        queue_path=tmp_path / "queue.txt",
+    )
+    short_q = cfg.queue_path_for("history")
+    long_q = cfg.longform_queue_path_for("history")
+    assert short_q != long_q
+    assert long_q == tmp_path / "queue_longform_history.txt"
+
+
+def test_default_config_includes_longform_block(tmp_path: Path) -> None:
+    p = tmp_path / "schedule.toml"
+    write_default_config(p)
+    text = p.read_text(encoding="utf-8")
+    assert "longform_slots" in text
+    assert "longform_duration_min" in text
+    assert "longform_privacy_status" in text
