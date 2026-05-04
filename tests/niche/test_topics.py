@@ -99,3 +99,26 @@ def test_discover_topics_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     with pytest.raises(RuntimeError):
         discover_topics(niche="history", count=3)
+
+
+def test_discover_topics_threads_audience_bias_into_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 'audience' arg should be reflected in the rendered Gemini prompt."""
+    items = [{"topic": "Topic", "angle": "a", "why_interesting": "w"}]
+
+    fake_client = MagicMock()
+    fake_client.models.generate_content.return_value = _fake_gemini_response(items)
+    fake_genai = MagicMock()
+    fake_genai.Client.return_value = fake_client
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake")
+    with patch.dict(
+        "sys.modules", {"google": MagicMock(genai=fake_genai), "google.genai": fake_genai}
+    ):
+        discover_topics(niche="history", count=1, audience="US")
+
+    assert fake_client.models.generate_content.call_count == 1
+    sent_prompt = fake_client.models.generate_content.call_args.kwargs["contents"]
+    assert "United States" in sent_prompt
+    assert "US audience" in sent_prompt

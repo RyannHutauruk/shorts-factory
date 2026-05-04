@@ -288,6 +288,9 @@ def topics_discover(
     avoid_history: Path = typer.Option(
         None, "--avoid-history", help="JSON history file; topics already produced are excluded."
     ),
+    audience: str = typer.Option(
+        "US", "--audience", help="US | UK | global | general - biases topic selection."
+    ),
 ) -> None:
     """Generate fresh topic ideas in a niche via Gemini."""
     avoid: list[str] = []
@@ -295,7 +298,7 @@ def topics_discover(
         from .niche.batch import BatchHistory
 
         avoid = BatchHistory.load(avoid_history).topics
-    items = discover_topics(niche=niche, count=count, avoid=avoid)
+    items = discover_topics(niche=niche, count=count, avoid=avoid, audience=audience)
     text = render_topics_text(items)
     if out:
         existing = out.read_text(encoding="utf-8") if out.exists() else ""
@@ -320,11 +323,12 @@ def schedule_init(
         "--config",
         "-c",
     ),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing config."),
 ) -> None:
-    """Write a starter schedule.toml at the given path (no overwrite)."""
+    """Write a starter schedule.toml at the given path."""
     from .upload.scheduler import write_default_config
 
-    write_default_config(config)
+    write_default_config(config, force=force)
     console.print(f"[green]config:[/green] {config}")
 
 

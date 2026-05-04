@@ -30,6 +30,7 @@ The scheduler:
 from __future__ import annotations
 
 import os
+import random
 import re
 import shlex
 import sys
@@ -44,9 +45,27 @@ except ImportError:  # pragma: no cover - py<3.11
     import tomli as _toml
 
 
+ALL_NICHES: list[str] = [
+    "true_crime",
+    "history",
+    "science",
+    "mysteries",
+    "weird_facts",
+    "biographies",
+    "tech_history",
+    "space",
+]
+
+
 @dataclass
 class ScheduleConfig:
-    """In-memory schedule config; see module docstring for the TOML schema."""
+    """In-memory schedule config; see module docstring for the TOML schema.
+
+    ``niche`` may be a single string or a list of strings. When it's a list
+    (or the special value ``"all"``) each tick picks a niche at random.
+    The previous niche is tracked in-memory and avoided on the next pick if
+    there are 2+ niches in the rotation.
+    """
 
     slots: list[str] = field(default_factory=lambda: ["09:30", "20:00"])
     timezone: str = "UTC"
@@ -55,12 +74,14 @@ class ScheduleConfig:
     history_path: Path = field(
         default_factory=lambda: Path("~/.config/shorts-factory/history.json")
     )
-    niche: str = "history"
+    niche: str | list[str] = "history"
+    audience: str = "US"
     privacy_status: str = "public"
     upload: bool = True
     auto_refill_topics: bool = True
     refill_count: int = 30
     schedule_publish_offset_min: int = 0
+    last_niche: str | None = None  # in-memory only; reset per process
 
     @staticmethod
     def _expand(p: Path) -> Path:
@@ -74,24 +95,73 @@ class ScheduleConfig:
             out_root=self._expand(self.out_root),
             history_path=self._expand(self.history_path),
             niche=self.niche,
+            audience=self.audience,
             privacy_status=self.privacy_status,
             upload=self.upload,
             auto_refill_topics=self.auto_refill_topics,
             refill_count=self.refill_count,
             schedule_publish_offset_min=self.schedule_publish_offset_min,
+            last_niche=self.last_niche,
         )
+
+    def niche_list(self) -> list[str]:
+        """Resolve ``niche`` (string | list | 'all') to a list of valid niches."""
+        if isinstance(self.niche, list):
+            niches = [n for n in self.niche if n in ALL_NICHES]
+            if not niches:
+                raise ValueError(f"niche list contains no recognised entries: {self.niche!r}")
+            return niches
+        if self.niche == "all":
+            return list(ALL_NICHES)
+        if self.niche in ALL_NICHES:
+            return [self.niche]
+        raise ValueError(f"unknown niche {self.niche!r}; choose from {ALL_NICHES} or pass a list")
+
+    def pick_niche(self, *, rng: random.Random | None = None) -> str:
+        """Pick the niche for the next tick. Avoids back-to-back repeats when
+        the rotation has 2+ niches.
+        """
+        niches = self.niche_list()
+        if len(niches) == 1:
+            return niches[0]
+        candidates = [n for n in niches if n != self.last_niche] or niches
+        if rng is None:
+            return random.choice(candidates)
+        return rng.choice(candidates)
+
+    def queue_path_for(self, niche: str) -> Path:
+        """Per-niche queue file. For multi-niche rotations we treat
+        ``queue_path`` as a template: ``queue.txt`` -> ``queue_<niche>.txt``
+        in the same directory.
+        """
+        if isinstance(self.niche, str) and self.niche != "all":
+            return self.queue_path
+        suffix = self.queue_path.suffix or ".txt"
+        stem = self.queue_path.stem or "queue"
+        return self.queue_path.with_name(f"{stem}_{niche}{suffix}")
 
 
 def load_config(path: Path) -> ScheduleConfig:
-    """Parse a schedule.toml file. Unknown keys are ignored."""
+    """Parse a schedule.toml file. Unknown keys are ignored.
+
+    ``niche`` may be a string, a list of strings, or the special value
+    ``"all"`` (rotate through all 8 built-in niches).
+    """
     raw = _toml.loads(path.read_text(encoding="utf-8"))
+    raw_niche = raw.get("niche", "history")
+    niche: str | list[str]
+    if isinstance(raw_niche, list):
+        niche = [str(n) for n in raw_niche]
+    else:
+        niche = str(raw_niche)
     cfg = ScheduleConfig(
         slots=list(raw.get("slots", ["09:30", "20:00"])),
         timezone=str(raw.get("timezone", "UTC")),
         queue_path=Path(str(raw.get("queue_path", "~/shorts-factory/queue.txt"))),
         out_root=Path(str(raw.get("out_root", "~/shorts-factory/out"))),
         history_path=Path(str(raw.get("history_path", "~/.config/shorts-factory/history.json"))),
-        niche=str(raw.get("niche", "history")),
+        niche=niche,
+        audience=str(raw.get("audience", "US")),
         privacy_status=str(raw.get("privacy_status", "public")),
         upload=bool(raw.get("upload", True)),
         auto_refill_topics=bool(raw.get("auto_refill_topics", True)),
@@ -101,9 +171,9 @@ def load_config(path: Path) -> ScheduleConfig:
     return cfg.expanded()
 
 
-def write_default_config(path: Path) -> None:
-    """Create a starter schedule.toml at ``path`` if missing."""
-    if path.exists():
+def write_default_config(path: Path, *, force: bool = False) -> None:
+    """Create a starter schedule.toml at ``path``. ``force`` overwrites."""
+    if path.exists() and not force:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -114,10 +184,17 @@ timezone = "UTC"             # set to your local TZ, e.g. "America/Los_Angeles"
 queue_path = "~/shorts-factory/queue.txt"
 out_root = "~/shorts-factory/out"
 history_path = "~/.config/shorts-factory/history.json"
-niche = "history"            # true_crime | history | science | mysteries | weird_facts | biographies | tech_history | space
+
+# Niche selection. Either:
+#   niche = "history"                           # single niche
+#   niche = "all"                               # rotate through every built-in niche
+#   niche = ["history", "science", "mysteries"] # rotate through your hand-picked subset
+niche = ["true_crime", "history", "science", "mysteries", "weird_facts", "biographies", "tech_history", "space"]
+
+audience = "US"              # US | UK | global | general - biases topic discovery
 privacy_status = "public"    # public | unlisted | private
 upload = true                # set false to generate without uploading
-auto_refill_topics = true    # auto-call Gemini topic discovery when queue empties
+auto_refill_topics = true    # auto-call Gemini topic discovery when a niche queue empties
 refill_count = 30
 schedule_publish_offset_min = 0
 """,
@@ -131,46 +208,77 @@ class TickResult:
     short_path: Path | None
     upload_url: str | None
     error: str | None
+    niche: str | None = None
 
 
 def tick_once(cfg: ScheduleConfig) -> TickResult:
-    """Run a single scheduler tick: pop a topic, generate, optionally upload."""
+    """Run a single scheduler tick: pick a niche, pop a topic, generate, optionally upload."""
     from ..niche.batch import BatchHistory, pop_next_topic
     from ..niche.pipeline import run_niche_pipeline
     from ..niche.topics import discover_topics, render_topics_text
 
     cfg = cfg.expanded()
-    cfg.queue_path.parent.mkdir(parents=True, exist_ok=True)
     cfg.out_root.mkdir(parents=True, exist_ok=True)
+
+    niche = cfg.pick_niche()
+    cfg.last_niche = niche
+    queue_path = cfg.queue_path_for(niche)
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[schedule] tick niche={niche} queue={queue_path}")
 
     history = BatchHistory.load(cfg.history_path)
 
-    if not cfg.queue_path.exists() or _queue_is_empty(cfg.queue_path):
+    if not queue_path.exists() or _queue_is_empty(queue_path):
         if not cfg.auto_refill_topics:
-            return TickResult(topic=None, short_path=None, upload_url=None, error="queue empty")
-        topics = discover_topics(niche=cfg.niche, count=cfg.refill_count, avoid=history.topics)
-        cfg.queue_path.write_text(render_topics_text(topics) + "\n", encoding="utf-8")
-        print(f"[schedule] refilled queue with {len(topics)} topics")
+            return TickResult(
+                topic=None, short_path=None, upload_url=None, error="queue empty", niche=niche
+            )
+        topics = discover_topics(
+            niche=niche,
+            count=cfg.refill_count,
+            avoid=history.topics,
+            audience=cfg.audience,
+        )
+        queue_path.write_text(render_topics_text(topics) + "\n", encoding="utf-8")
+        print(f"[schedule] refilled {niche} queue with {len(topics)} topics")
 
-    topic = pop_next_topic(cfg.queue_path, history)
+    topic = pop_next_topic(queue_path, history)
     if not topic:
         return TickResult(
-            topic=None, short_path=None, upload_url=None, error="queue empty after refill"
+            topic=None,
+            short_path=None,
+            upload_url=None,
+            error="queue empty after refill",
+            niche=niche,
         )
 
     sub = cfg.out_root / _slug_dir(topic)
     try:
-        result = run_niche_pipeline(topic=topic, niche=cfg.niche, out_dir=sub)
+        result = run_niche_pipeline(topic=topic, niche=niche, out_dir=sub)
     except Exception as exc:
-        return TickResult(topic=topic, short_path=None, upload_url=None, error=f"generate: {exc}")
+        return TickResult(
+            topic=topic,
+            short_path=None,
+            upload_url=None,
+            error=f"generate: {exc}",
+            niche=niche,
+        )
 
     history.record(topic, result.script.hook)
     history.save()
 
     if not cfg.upload:
-        return TickResult(topic=topic, short_path=result.short_path, upload_url=None, error=None)
+        return TickResult(
+            topic=topic,
+            short_path=result.short_path,
+            upload_url=None,
+            error=None,
+            niche=niche,
+        )
 
-    return _upload_and_record(cfg, result, sub)
+    tick = _upload_and_record(cfg, result, sub)
+    tick.niche = niche
+    return tick
 
 
 def _upload_and_record(cfg: ScheduleConfig, result: Any, sub: Path) -> TickResult:

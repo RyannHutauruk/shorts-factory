@@ -35,11 +35,13 @@ class TopicIdea:
 
 _TOPIC_PROMPT = """You are a research producer for a faceless YouTube Shorts channel.
 The channel niche is: {niche_label}.
+Target audience: {audience_label}.
 
 Generate exactly {count} distinct topic ideas suitable for a 35-50 second
 explainer short. Rules:
 - Each topic MUST have a Wikipedia article (so we can search Wikimedia Commons
   for B-roll).
+- {audience_bias}
 - No two topics should overlap in subject. Mix well-known with lesser-known
   but verifiable subjects.
 - No clickbait fabrications. No conspiracy theories.
@@ -62,6 +64,33 @@ Output STRICT JSON, no markdown:
   ]
 }}
 """
+
+_AUDIENCE_BIAS: dict[str, tuple[str, str]] = {
+    # (label, bias-instruction)
+    "US": (
+        "United States (English-speaking, North American cultural context)",
+        "Bias toward topics resonant with a US audience: US history and "
+        "people, North American mysteries/disasters, NASA/US space program, "
+        "US tech history. Globally famous topics are fine (Pompeii, "
+        "Chernobyl, Cleopatra) - just avoid niche regional content with no "
+        "US recognition.",
+    ),
+    "UK": (
+        "United Kingdom (English, British cultural context)",
+        "Bias toward UK and Commonwealth history, British mysteries and "
+        "disasters, UK science figures and inventions. Globally famous "
+        "topics are fine.",
+    ),
+    "global": (
+        "global English-speaking",
+        "Mix topics across continents and centuries; avoid bias toward any single country.",
+    ),
+    "general": (
+        "general English-speaking",
+        "Mix topics across continents and centuries; pick the most "
+        "objectively fascinating subjects regardless of region.",
+    ),
+}
 
 _NICHE_LABELS: dict[str, str] = {
     "true_crime": "true crime / disasters / historical catastrophes",
@@ -111,13 +140,19 @@ def discover_topics(
     niche: str = "history",
     count: int = DEFAULT_TOPIC_COUNT,
     avoid: list[str] | None = None,
+    audience: str = "US",
     model: str = "gemini-2.5-flash-lite",
     api_key: str | None = None,
 ) -> list[TopicIdea]:
-    """Ask Gemini for ``count`` fresh topic ideas in ``niche``."""
+    """Ask Gemini for ``count`` fresh topic ideas in ``niche``.
+
+    ``audience`` biases the topic mix; default ``"US"`` favours US-relevant
+    subjects. Other supported values: ``"UK"``, ``"global"``, ``"general"``.
+    """
     if niche not in NICHE_PROMPTS:
         raise ValueError(f"unknown niche {niche!r}; choose from {sorted(NICHE_PROMPTS)}")
     label = _NICHE_LABELS.get(niche, niche.replace("_", " "))
+    audience_label, audience_bias = _AUDIENCE_BIAS.get(audience, _AUDIENCE_BIAS["general"])
 
     key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not key:
@@ -130,7 +165,13 @@ def discover_topics(
 
     client = genai.Client(api_key=key)
     avoid_list = json.dumps(avoid or [])
-    prompt = _TOPIC_PROMPT.format(niche_label=label, count=count, avoid_list=avoid_list)
+    prompt = _TOPIC_PROMPT.format(
+        niche_label=label,
+        audience_label=audience_label,
+        audience_bias=audience_bias,
+        count=count,
+        avoid_list=avoid_list,
+    )
     resp = _gemini_call_with_retry(
         client,
         model=model,

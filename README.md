@@ -111,12 +111,24 @@ timezone = "America/Los_Angeles"
 queue_path = "~/shorts-factory/queue.txt"
 out_root = "~/shorts-factory/out"
 history_path = "~/.config/shorts-factory/history.json"
-niche = "history"            # or any other niche name above
+
+# Niche selection. Three formats:
+#   niche = "history"                          # single niche
+#   niche = "all"                              # rotate through every built-in niche
+#   niche = ["history", "science", "space"]    # rotate through your hand-picked subset
+niche = ["true_crime", "history", "science", "mysteries", "weird_facts", "biographies", "tech_history", "space"]
+
+audience = "US"              # US | UK | global | general - biases topic discovery
 privacy_status = "public"    # public | unlisted | private
 upload = true                # set false to generate only
-auto_refill_topics = true    # auto-call Gemini topic discovery when queue empties
+auto_refill_topics = true    # auto-call Gemini topic discovery when a niche queue empties
 refill_count = 30
 ```
+
+When `niche` is a list (or `"all"`), each tick picks one niche at random
+and avoids picking the same niche back-to-back. Each niche keeps its own
+queue file under `queue_path`'s directory (e.g. `queue_history.txt`,
+`queue_space.txt`), so refills stay clean.
 
 ### Run the scheduler
 
