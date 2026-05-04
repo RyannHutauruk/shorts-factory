@@ -79,17 +79,55 @@ def test_split_paragraph_phrases_span_the_full_duration() -> None:
 # ---------- _allocate_shots ----------
 
 
-def test_allocate_shots_splits_duration_evenly() -> None:
-    seg = _seg("hello world", start=0.0, end=6.0)
+def test_allocate_shots_caps_each_shot_to_max_duration() -> None:
+    """A 30s paragraph should produce ~5-6 shots (one per ~5.5s) to avoid
+    holding a single image for half a minute (the previous behaviour)."""
+    seg = _seg("hello world", start=0.0, end=30.0)
     assets = [_asset("a"), _asset("b"), _asset("c")]
     seen: set[str] = set()
     shots = _allocate_shots(seg, assets, [], seen_in_section=seen)
-    assert len(shots) == 3
+    assert 4 <= len(shots) <= 7, f"expected 4-7 shots, got {len(shots)}"
     # Last shot's end should equal the segment's end
     assert shots[-1].end == pytest.approx(seg.end, abs=1e-3)
     # All shots together cover the segment
     total = sum(s.duration for s in shots)
     assert total == pytest.approx(seg.duration, abs=1e-3)
+    # Each shot honours the per-shot duration cap (within rounding).
+    for s in shots:
+        assert s.duration <= 7.0, f"shot too long: {s.duration}"
+
+
+def test_allocate_shots_short_segment_emits_single_shot() -> None:
+    """A short paragraph (under MAX_SHOT_DURATION) gets one shot covering it."""
+    seg = _seg("hi", start=0.0, end=4.0)
+    shots = _allocate_shots(seg, [_asset("a")], [], seen_in_section=set())
+    assert len(shots) == 1
+    assert shots[0].duration == pytest.approx(4.0, abs=1e-3)
+
+
+def test_allocate_shots_cycles_through_pool_when_more_shots_than_assets() -> None:
+    """If a 30s paragraph only has 2 assets, shots cycle a,b,a,b,a,b."""
+    seg = _seg("long", start=0.0, end=30.0)
+    assets = [_asset("a"), _asset("b")]
+    shots = _allocate_shots(seg, assets, [], seen_in_section=set())
+    paths = [s.image_path.stem for s in shots]
+    assert paths[0] == "a"
+    assert paths[1] == "b"
+    # Cycling means we see each asset multiple times.
+    assert paths.count("a") >= 2
+    assert paths.count("b") >= 2
+
+
+def test_allocate_shots_rotates_motion_presets() -> None:
+    """Consecutive shots within a segment use different motion presets."""
+    seg = _seg("long", start=0.0, end=30.0)
+    assets = [_asset(f"img{i}") for i in range(8)]
+    shots = _allocate_shots(seg, assets, [], seen_in_section=set())
+    motions = [s.motion for s in shots]
+    # First two shots should differ.
+    assert motions[0] != motions[1]
+    # Across all shots we should see at least 3 distinct motions.
+    assert len(set(motions)) >= 3
 
 
 def test_allocate_shots_falls_back_when_assets_empty() -> None:
@@ -316,3 +354,13 @@ def test_shot_filter_uses_fit_inside_canvas_strategy() -> None:
     assert "force_original_aspect_ratio=increase" in g
     # Padding always goes to 1920x1080, never smaller.
     assert "pad=1920:1080" in g
+
+
+@pytest.mark.parametrize(
+    "motion",
+    ["zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down"],
+)
+def test_shot_filter_supports_all_motion_presets(motion: str) -> None:
+    g = _shot_filter(0, 4.0, "shot0", motion=motion)
+    # Every motion still emits a zoompan filter on the foreground stack.
+    assert "zoompan=z=" in g

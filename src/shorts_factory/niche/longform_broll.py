@@ -85,8 +85,8 @@ def fetch_chapter_broll(
     topic: str,
     dest_dir: Path,
     seen: set[str],
-    per_beat: int = 2,
-    chapter_fallbacks: int = 3,
+    per_beat: int = 4,
+    chapter_fallbacks: int = 8,
 ) -> LongformChapterBroll:
     """Fetch B-roll for one chapter: per-beat search + chapter-level fallback."""
     chapter_dir = dest_dir / f"chapter_{chapter.index:02d}"
@@ -125,10 +125,10 @@ def fetch_longform_broll(
     script: LongformScript,
     *,
     dest_dir: Path,
-    per_beat: int = 2,
-    chapter_fallbacks: int = 3,
-    cold_open_count: int = 4,
-    outro_count: int = 2,
+    per_beat: int = 4,
+    chapter_fallbacks: int = 8,
+    cold_open_count: int = 6,
+    outro_count: int = 4,
 ) -> LongformBrollPlan:
     """Top-level: gather all B-roll for a long-form script.
 

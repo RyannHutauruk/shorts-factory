@@ -32,15 +32,25 @@ CHAPTER_CARD_FONT_SIZE = 64
 CHAPTER_CARD_DURATION = 3.0
 CAPTION_MAX_CHARS = 60  # 16:9 fits much wider lines than 9:16
 
+# Maximum time any single image can stay on screen before we cycle to the next.
+# Long-form narration paragraphs can run 30-60s; without this cap a single
+# image would hold for the whole paragraph which feels like a still slideshow.
+MAX_SHOT_DURATION = 5.5
+# Minimum shot duration; below this the Ken Burns motion is barely visible.
+MIN_SHOT_DURATION = 2.5
+
 
 @dataclass(frozen=True)
 class LongformShot:
-    """A single image displayed for ``duration`` seconds."""
+    """A single image displayed for ``duration`` seconds with a motion preset."""
 
     image_path: Path
     duration: float
     start: float
     end: float
+    # One of: "zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down".
+    # Defaults to "zoom_in" for backwards-compatibility with the original tests.
+    motion: str = "zoom_in"
 
 
 @dataclass(frozen=True)
@@ -60,31 +70,72 @@ class LongformAssembleJob:
 # ---------- Shot list builder ----------
 
 
+_MOTION_PRESETS = (
+    "zoom_in",
+    "zoom_out",
+    "pan_left",
+    "pan_right",
+    "pan_up",
+    "pan_down",
+)
+
+
+def _take_unseen(
+    pool: list[BrollAsset],
+    *,
+    seen_in_section: set[str],
+    chosen: list[BrollAsset],
+    max_per_segment: int,
+) -> bool:
+    """Append unseen assets from ``pool`` into ``chosen``. Returns True when full."""
+    for a in pool:
+        key = str(a.local_path)
+        if key in seen_in_section:
+            continue
+        seen_in_section.add(key)
+        chosen.append(a)
+        if len(chosen) >= max_per_segment:
+            return True
+    return False
+
+
+def _take_any(pool: list[BrollAsset], *, chosen: list[BrollAsset], max_per_segment: int) -> bool:
+    """Append assets from ``pool`` regardless of seen state. Returns True when full."""
+    for a in pool:
+        chosen.append(a)
+        if len(chosen) >= max_per_segment:
+            return True
+    return False
+
+
 def _pick_assets_for_segment(
     assets: list[BrollAsset],
     fallbacks: list[BrollAsset],
     *,
     seen_in_section: set[str],
-    max_per_segment: int = 3,
+    max_per_segment: int = 12,
 ) -> list[BrollAsset]:
-    """Pick up to ``max_per_segment`` non-repeated assets for one paragraph."""
+    """Collect unseen assets from primary then fallback pool.
+
+    The previous implementation hard-capped each paragraph at 3 images.
+    For long paragraphs (30-60s of narration) that produced 10-20s shots
+    which felt static; we now grab the whole pool and let
+    ``_allocate_shots`` cycle through them at the per-shot duration cap.
+    """
     chosen: list[BrollAsset] = []
     for src in (assets, fallbacks):
-        for a in src:
-            key = str(a.local_path)
-            if key in seen_in_section and chosen:
-                continue
-            seen_in_section.add(key)
-            chosen.append(a)
-            if len(chosen) >= max_per_segment:
-                break
+        if _take_unseen(
+            src, seen_in_section=seen_in_section, chosen=chosen, max_per_segment=max_per_segment
+        ):
+            return chosen
+    if chosen:
+        return chosen
+    # All candidates already used in this section -> permit reuse.
+    for src in (assets, fallbacks):
+        if _take_any(src, chosen=chosen, max_per_segment=max_per_segment):
+            return chosen
         if chosen:
-            break
-    if not chosen:
-        if fallbacks:
-            chosen = [fallbacks[0]]
-        elif assets:
-            chosen = [assets[0]]
+            return chosen
     return chosen
 
 
@@ -94,10 +145,17 @@ def _allocate_shots(
     fallbacks: list[BrollAsset],
     *,
     seen_in_section: set[str],
+    motion_offset: int = 0,
 ) -> list[LongformShot]:
-    """Split one paragraph's duration evenly across its assets.
+    """Allocate shots covering ``segment.duration`` with rotating motion presets.
 
-    If both ``assets`` and ``fallbacks`` are empty this raises.
+    Strategy:
+      - Start from how many shots the segment can hold given ``MAX_SHOT_DURATION``.
+      - Use that many distinct images, cycling through the available pool if
+        the pool is smaller than the shot count.
+      - Each shot gets a deterministic motion preset based on its absolute index.
+
+    Raises if both ``assets`` and ``fallbacks`` are empty.
     """
     chosen = _pick_assets_for_segment(assets, fallbacks, seen_in_section=seen_in_section)
     if not chosen:
@@ -106,17 +164,34 @@ def _allocate_shots(
             f"(text starts: {segment.text[:60]!r}...)"
         )
 
-    per = max(0.5, segment.duration / len(chosen))
+    # How many shots fit while keeping each shot >= MIN_SHOT_DURATION and
+    # <= MAX_SHOT_DURATION.
+    n_shots = max(1, int(segment.duration // MAX_SHOT_DURATION))
+    if segment.duration % MAX_SHOT_DURATION >= MIN_SHOT_DURATION:
+        n_shots += 1
+    # Don't ask for fewer shots than the segment minimally needs.
+    n_shots = max(1, n_shots)
+    # No point making more shots than would fit at MIN_SHOT_DURATION.
+    max_fit = max(1, int(segment.duration / MIN_SHOT_DURATION))
+    n_shots = min(n_shots, max_fit)
+
+    per = segment.duration / n_shots
     shots: list[LongformShot] = []
     cursor = segment.start
-    for i, asset in enumerate(chosen):
-        dur = max(0.5, segment.end - cursor) if i == len(chosen) - 1 else per
+    for i in range(n_shots):
+        asset = chosen[i % len(chosen)]
+        # Last shot absorbs any rounding so we hit segment.end exactly.
+        dur = (segment.end - cursor) if i == n_shots - 1 else per
+        # Guard against degenerate inputs (a 0-duration segment).
+        dur = max(MIN_SHOT_DURATION, dur) if n_shots > 1 else max(0.5, dur)
+        motion = _MOTION_PRESETS[(motion_offset + i) % len(_MOTION_PRESETS)]
         shots.append(
             LongformShot(
                 image_path=asset.local_path,
                 duration=dur,
                 start=cursor,
                 end=cursor + dur,
+                motion=motion,
             )
         )
         cursor += dur
@@ -139,6 +214,7 @@ def build_shot_list(
             broll.cold_open_assets,
             broll.outro_assets + [a for ch in broll.chapters for a in ch.chapter_assets],
             seen_in_section=cold_open_seen,
+            motion_offset=len(shots),
         )
     )
 
@@ -158,6 +234,7 @@ def build_shot_list(
                     [a for assets in chapter_broll.beat_assets for a in assets]
                     + broll.cold_open_assets,
                     seen_in_section=chapter_seen,
+                    motion_offset=len(shots),
                 )
             )
             paragraph_idx += 1
@@ -171,6 +248,7 @@ def build_shot_list(
                     chapter_broll.beat_assets[beat_pos],
                     chapter_broll.chapter_assets + broll.cold_open_assets,
                     seen_in_section=chapter_seen,
+                    motion_offset=len(shots),
                 )
             )
             paragraph_idx += 1
@@ -183,6 +261,7 @@ def build_shot_list(
                     [a for assets in chapter_broll.beat_assets for a in assets]
                     + broll.cold_open_assets,
                     seen_in_section=chapter_seen,
+                    motion_offset=len(shots),
                 )
             )
             paragraph_idx += 1
@@ -195,6 +274,7 @@ def build_shot_list(
             broll.outro_assets,
             broll.cold_open_assets + [a for ch in broll.chapters for a in ch.chapter_assets],
             seen_in_section=outro_seen,
+            motion_offset=len(shots),
         )
     )
     return shots
@@ -324,9 +404,51 @@ def build_caption_ass(
 # ---------- ffmpeg compose ----------
 
 
-def _shot_filter(input_idx: int, duration: float, label: str) -> str:
-    """Per-image filter: blurred-bars + Ken Burns zoom for a 16:9 canvas."""
+def _zoompan_for_motion(motion: str, n_frames: int) -> tuple[str, str, str]:
+    """Return (z_expr, x_expr, y_expr) for a Ken Burns motion preset.
+
+    All motions are designed so the on-screen image moves perceptibly across
+    the full shot. Zooms ramp from 1.0 -> 1.18; pans hold zoom at ~1.15 and
+    slide x/y across the available range.
+    """
+    # Avoid divide-by-zero in expressions when n_frames == 1.
+    safe = max(1, n_frames - 1)
+    if motion == "zoom_in":
+        z = "min(1+0.0028*on,1.20)"
+        x = "iw/2-(iw/zoom/2)"
+        y = "ih/2-(ih/zoom/2)"
+    elif motion == "zoom_out":
+        z = "max(1.20-0.0028*on,1.02)"
+        x = "iw/2-(iw/zoom/2)"
+        y = "ih/2-(ih/zoom/2)"
+    elif motion == "pan_left":
+        z = "1.15"
+        x = f"(iw-iw/zoom)*(1 - on/{safe})"
+        y = "ih/2-(ih/zoom/2)"
+    elif motion == "pan_right":
+        z = "1.15"
+        x = f"(iw-iw/zoom)*(on/{safe})"
+        y = "ih/2-(ih/zoom/2)"
+    elif motion == "pan_up":
+        z = "1.15"
+        x = "iw/2-(iw/zoom/2)"
+        y = f"(ih-ih/zoom)*(1 - on/{safe})"
+    elif motion == "pan_down":
+        z = "1.15"
+        x = "iw/2-(iw/zoom/2)"
+        y = f"(ih-ih/zoom)*(on/{safe})"
+    else:
+        # Fallback: same as zoom_in.
+        z = "min(1+0.0028*on,1.20)"
+        x = "iw/2-(iw/zoom/2)"
+        y = "ih/2-(ih/zoom/2)"
+    return z, x, y
+
+
+def _shot_filter(input_idx: int, duration: float, label: str, motion: str = "zoom_in") -> str:
+    """Per-image filter: blurred-bars + Ken Burns motion for a 16:9 canvas."""
     n_frames = max(1, int(round(duration * FPS)))
+    z, x, y = _zoompan_for_motion(motion, n_frames)
     # The foreground is fit-inside the 1920x1080 canvas (decrease) and then
     # padded; this avoids "padded dimensions smaller than input" errors when
     # an ultra-wide source image is taller than the canvas after a
@@ -338,8 +460,7 @@ def _shot_filter(input_idx: int, duration: float, label: str) -> str:
         f"[fg{input_idx}]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease:flags=lanczos,"
         f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black@0[fgpad{input_idx}];"
         f"[bgblur{input_idx}][fgpad{input_idx}]overlay=0:0:format=auto[stacked{input_idx}];"
-        f"[stacked{input_idx}]zoompan=z='min(1+0.0006*on,1.08)':"
-        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+        f"[stacked{input_idx}]zoompan=z='{z}':x='{x}':y='{y}':"
         f"d={n_frames}:s={WIDTH}x{HEIGHT}:fps={FPS},"
         f"setsar=1,format=yuv420p,"
         f"trim=duration={duration},setpts=PTS-STARTPTS[{label}]"
@@ -347,7 +468,9 @@ def _shot_filter(input_idx: int, duration: float, label: str) -> str:
 
 
 def _build_visual_filter(shots: list[LongformShot], ass_path: Path) -> str:
-    parts = [_shot_filter(i, shot.duration, f"shot{i}") for i, shot in enumerate(shots)]
+    parts = [
+        _shot_filter(i, shot.duration, f"shot{i}", shot.motion) for i, shot in enumerate(shots)
+    ]
     concat_inputs = "".join(f"[shot{i}]" for i in range(len(shots)))
     ass_escaped = str(ass_path).replace("\\", "\\\\").replace(":", r"\:").replace("'", r"\'")
     return (
