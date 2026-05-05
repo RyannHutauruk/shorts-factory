@@ -1,0 +1,68 @@
+[project]
+name = "shorts-factory"
+version = "0.1.0"
+description = "Pipeline that turns public-domain movies into vertical short-form clips."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Rich Panda" }]
+dependencies = [
+    "yt-dlp>=2024.10.0",
+    "scenedetect[opencv]>=0.6.4",
+    "faster-whisper>=1.0.3",
+    "requests>=2.32",
+    "rich>=13.7",
+    "typer>=0.12",
+    "pydantic>=2.7",
+    "ffmpeg-python>=0.2",
+    "numpy>=1.26",
+    "tqdm>=4.66",
+    # Niche pipeline (faceless explainer shorts)
+    "piper-tts>=1.2.0",
+    "google-genai>=0.5.0",
+    # Local scheduler + YouTube upload
+    "apscheduler>=3.10",
+    "google-api-python-client>=2.140",
+    "google-auth-oauthlib>=1.2",
+    # tomli only needed on python<3.11; harmless elsewhere
+    'tomli>=2.0; python_version<"3.11"',
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6.0",
+    "mypy>=1.10",
+    "pytest>=8.2",
+    "types-requests>=2.32",
+]
+
+[project.scripts]
+shorts-factory = "shorts_factory.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shorts_factory"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "C90"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer encourages typer.Option(...) as a default value; that's the idiomatic API.
+"src/shorts_factory/cli.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = false
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
